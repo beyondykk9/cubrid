@@ -2261,6 +2261,12 @@ pt_xasl_node_to_domain (PARSER_CONTEXT * parser, const PT_NODE * node)
   TP_DOMAIN *dom;
 
   dom = pt_node_to_db_domain (parser, (PT_NODE *) node, NULL);
+  if (dom && dom->type->id == DB_TYPE_NUMERIC)
+    {
+      dom->precision = dom->scale = 0;
+      return dom;
+    }
+
   if (dom)
     {
       return tp_domain_cache (dom);
