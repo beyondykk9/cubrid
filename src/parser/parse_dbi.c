@@ -1917,11 +1917,6 @@ pt_data_type_to_db_domain (PARSER_CONTEXT * parser, PT_NODE * dt, const char *cl
     case DB_TYPE_NUMERIC:
       precision = dt->info.data_type.precision;
       scale = dt->info.data_type.dec_precision;
-      if (precision == DB_DEFAULT_NUMERIC_PRECISION && scale == DB_DEFAULT_NUMERIC_SCALE)
-	{
-	  precision = 0;
-	  scale = 0;
-	}
       break;
 
     case DB_TYPE_SET:
@@ -2299,6 +2294,11 @@ pt_node_to_db_domain (PARSER_CONTEXT * parser, PT_NODE * node, const char *class
 
 	default:
 	  retval = pt_data_type_to_db_domain (parser, node->data_type, class_name);
+	  if (domain_type == DB_TYPE_NUMERIC)
+	    {
+	      retval->precision = 0;
+	      retval->scale = 0;
+	    }
 	  break;
 	}
     }
