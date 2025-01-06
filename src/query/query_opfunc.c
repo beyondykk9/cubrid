@@ -6523,10 +6523,10 @@ qdata_get_dbval_from_constant_regu_variable (THREAD_ENTRY * thread_p, REGU_VARIA
 		  /* do not cast at here, is handled at analytic function evaluation later */
 		  ;
 		}
-	      else if (regu_var_p->type == TYPE_SP && val_type == DB_TYPE_NUMERIC)
+	      else if (val_type == DB_TYPE_NUMERIC)
 		{
 		  /*
-		   * When returning from SP as a Numeric type,
+		   * When returning a Numeric type,
 		   * we must set the precision and scale of the actual returned value.
 		   * Otherwise, the decimal points will be truncated.
 		   */
