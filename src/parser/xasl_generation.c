@@ -2261,12 +2261,6 @@ pt_xasl_node_to_domain (PARSER_CONTEXT * parser, const PT_NODE * node)
   TP_DOMAIN *dom;
 
   dom = pt_node_to_db_domain (parser, (PT_NODE *) node, NULL);
-  if (dom && dom->type->id == DB_TYPE_NUMERIC)
-    {
-      dom->precision = dom->scale = 0;
-      return dom;
-    }
-
   if (dom)
     {
       return tp_domain_cache (dom);
@@ -9688,7 +9682,11 @@ pt_to_position_regu_variable_list (PARSER_CONTEXT * parser, PT_NODE * node_list,
        * regu variable and regu_variable_list bizarreness. */
       if (*tail)
 	{
-	  TP_DOMAIN *domain = pt_xasl_node_to_domain (parser, node);
+	  TP_DOMAIN *domain = pt_node_to_db_domain (parser, (PT_NODE *) node, NULL);
+	  if (domain->type->id == DB_TYPE_NUMERIC)
+	    {
+	      domain->precision = domain->scale = 0;
+	    }
 
 	  (*tail)->value.type = TYPE_POSITION;
 	  (*tail)->value.domain = domain;
@@ -9969,7 +9967,11 @@ pt_attribute_to_regu (PARSER_CONTEXT * parser, PT_NODE * attr)
 	      if (regu)
 		{
 		  regu->type = TYPE_CONSTANT;
-		  regu->domain = pt_xasl_node_to_domain (parser, attr);
+		  regu->domain = pt_node_to_db_domain (parser, (PT_NODE *) attr, NULL);
+		  if (regu->domain->type->id == DB_TYPE_NUMERIC)
+		    {
+		      regu->domain->precision = regu->domain->scale = 0;
+		    }
 		  dbval =
 		    pt_index_value (table_info->value_list,
 				    pt_find_attribute (parser, attr, table_info->attribute_list));
