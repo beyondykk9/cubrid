@@ -7706,7 +7706,7 @@ pt_to_regu_variable (PARSER_CONTEXT * parser, PT_NODE * node, UNBOX unbox)
 			      domain = node->expected_domain;
 			    }
 			}
-		      else if (node->data_type->type_enum == PT_TYPE_NUMERIC)
+		      else if (node->type_enum == PT_TYPE_NUMERIC)
 			{
 			  domain = pt_node_to_db_domain (parser, (PT_NODE *) node, NULL);
 			  domain->precision = domain->scale = 0;
