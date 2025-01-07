@@ -2309,6 +2309,12 @@ qdata_coerce_result_to_domain (DB_VALUE * result_p, TP_DOMAIN * domain_p)
 
   if (domain_p != NULL)
     {
+      /* NUMERIC type operation allows precision 0 to reflect the result's any precision */
+      if (domain_p->type->id == DB_TYPE_NUMERIC && domain_p->precision == 0)
+	{
+	  return NO_ERROR;
+	}
+
       dom_status = tp_value_coerce (result_p, result_p, domain_p);
       if (dom_status != DOMAIN_COMPATIBLE)
 	{
