@@ -9689,11 +9689,18 @@ pt_to_position_regu_variable_list (PARSER_CONTEXT * parser, PT_NODE * node_list,
 	{
 	  TP_DOMAIN *domain;
 
-	  /* for NUMERIC type, default precision = 0 (means any precision) */
-	  domain = pt_node_to_db_domain (parser, (PT_NODE *) node, NULL);
-	  if (domain->type->id == DB_TYPE_NUMERIC)
+	  if (db_get_client_type () == DB_CLIENT_TYPE_ADMIN_UTILITY)
 	    {
-	      domain->precision = domain->scale = 0;
+	      domain = pt_xasl_node_to_domain (parser, node);
+	    }
+	  else
+	    {
+	      /* for NUMERIC type, default precision = 0 (means any precision) */
+	      domain = pt_node_to_db_domain (parser, (PT_NODE *) node, NULL);
+	      if (domain->type->id == DB_TYPE_NUMERIC)
+		{
+		  domain->precision = domain->scale = 0;
+		}
 	    }
 
 	  (*tail)->value.type = TYPE_POSITION;
@@ -9976,11 +9983,18 @@ pt_attribute_to_regu (PARSER_CONTEXT * parser, PT_NODE * attr)
 		{
 		  regu->type = TYPE_CONSTANT;
 
-		  /* for NUMERIC type, default precision = 0 (means any precision) */
-		  regu->domain = pt_node_to_db_domain (parser, (PT_NODE *) attr, NULL);
-		  if (regu->domain->type->id == DB_TYPE_NUMERIC)
+		  if (db_get_client_type () == DB_CLIENT_TYPE_ADMIN_UTILITY)
 		    {
-		      regu->domain->precision = regu->domain->scale = 0;
+		      regu->domain = pt_xasl_node_to_domain (parser, attr);
+		    }
+		  else
+		    {
+		      /* for NUMERIC type, default precision = 0 (means any precision) */
+		      regu->domain = pt_node_to_db_domain (parser, (PT_NODE *) attr, NULL);
+		      if (regu->domain->type->id == DB_TYPE_NUMERIC)
+			{
+			  regu->domain->precision = regu->domain->scale = 0;
+			}
 		    }
 
 		  dbval =
