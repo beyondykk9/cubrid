@@ -7709,7 +7709,10 @@ pt_to_regu_variable (PARSER_CONTEXT * parser, PT_NODE * node, UNBOX unbox)
 		      else if (node->type_enum == PT_TYPE_NUMERIC)
 			{
 			  domain = pt_node_to_db_domain (parser, (PT_NODE *) node, NULL);
-			  domain->precision = domain->scale = 0;
+			  if (domain->type->id == DB_TYPE_NUMERIC)
+			    {
+			      domain->precision = domain->scale = 0;
+			    }
 			}
 		      else
 			{
@@ -9693,7 +9696,7 @@ pt_to_position_regu_variable_list (PARSER_CONTEXT * parser, PT_NODE * node_list,
 	    {
 	      domain = pt_xasl_node_to_domain (parser, node);
 	    }
-	  else
+	  else if (node->type_enum == PT_TYPE_NUMERIC)
 	    {
 	      /* for NUMERIC type, default precision = 0 (means any precision) */
 	      domain = pt_node_to_db_domain (parser, (PT_NODE *) node, NULL);
@@ -9701,6 +9704,10 @@ pt_to_position_regu_variable_list (PARSER_CONTEXT * parser, PT_NODE * node_list,
 		{
 		  domain->precision = domain->scale = 0;
 		}
+	    }
+	  else
+	    {
+	      domain = pt_xasl_node_to_domain (parser, node);
 	    }
 
 	  (*tail)->value.type = TYPE_POSITION;
@@ -9987,7 +9994,7 @@ pt_attribute_to_regu (PARSER_CONTEXT * parser, PT_NODE * attr)
 		    {
 		      regu->domain = pt_xasl_node_to_domain (parser, attr);
 		    }
-		  else
+		  else if (attr->type_enum == PT_TYPE_NUMERIC)
 		    {
 		      /* for NUMERIC type, default precision = 0 (means any precision) */
 		      regu->domain = pt_node_to_db_domain (parser, (PT_NODE *) attr, NULL);
@@ -9995,6 +10002,10 @@ pt_attribute_to_regu (PARSER_CONTEXT * parser, PT_NODE * attr)
 			{
 			  regu->domain->precision = regu->domain->scale = 0;
 			}
+		    }
+		  else
+		    {
+		      regu->domain = pt_xasl_node_to_domain (parser, attr);
 		    }
 
 		  dbval =
