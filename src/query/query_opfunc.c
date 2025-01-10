@@ -6538,8 +6538,10 @@ qdata_get_dbval_from_constant_regu_variable (THREAD_ENTRY * thread_p, REGU_VARIA
 		   * we must set the precision and scale of the actual returned value.
 		   * Otherwise, the decimal points will be truncated.
 		   */
-		  regu_var_p->domain->precision = peek_value_p->domain.numeric_info.precision;
-		  regu_var_p->domain->scale = peek_value_p->domain.numeric_info.scale;
+		  int precision = peek_value_p->domain.numeric_info.precision;
+		  int scale = peek_value_p->domain.numeric_info.scale;
+
+		  regu_var_p->domain = tp_domain_construct (DB_TYPE_NUMERIC, NULL, precision, scale, NULL);
 		}
 	      else
 		{
