@@ -9964,7 +9964,6 @@ pt_attribute_to_regu (PARSER_CONTEXT * parser, PT_NODE * attr)
 		{
 		  regu->type = TYPE_CONSTANT;
 		  regu->domain = pt_xasl_node_to_domain (parser, attr);
-
 		  dbval =
 		    pt_index_value (table_info->value_list,
 				    pt_find_attribute (parser, attr, table_info->attribute_list));
