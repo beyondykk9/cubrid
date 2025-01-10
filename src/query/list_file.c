@@ -6237,7 +6237,13 @@ qfile_update_domains_on_type_list (THREAD_ENTRY * thread_p, QFILE_LIST_ID * list
 	  goto exit_on_error;
 	}
 
-      if (TP_DOMAIN_TYPE (list_id_p->type_list.domp[count]) == DB_TYPE_VARIABLE)
+      /* To prevent decimal points from being truncated */
+      if (TP_DOMAIN_TYPE (list_id_p->type_list.domp[count]) == DB_TYPE_NUMERIC)
+	{
+	  list_id_p->type_list.domp[count]->precision = reg_var_p->value.domain->precision;
+	  list_id_p->type_list.domp[count]->scale = reg_var_p->value.domain->scale;
+	}
+      else if (TP_DOMAIN_TYPE (list_id_p->type_list.domp[count]) == DB_TYPE_VARIABLE)
 	{
 	  if (TP_DOMAIN_TYPE (reg_var_p->value.domain) == DB_TYPE_VARIABLE)
 	    {
