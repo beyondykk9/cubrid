@@ -7916,6 +7916,16 @@ pt_eval_type (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_
 
     case PT_METHOD_CALL:
       node = pt_eval_method_call_type (parser, node);
+      if (node->info.method_call.method_type == PT_SP_FUNCTION && node->type_enum == PT_TYPE_NUMERIC)
+	{
+	  /* not visited yet */
+	  if (node->info.data_type.precision > 0)
+	    {
+	      /* it should visit once for cast op. */
+	      node->info.data_type.precision = 0;
+	      node = pt_wrap_with_cast_op (parser, node, PT_TYPE_NUMERIC, 0, 0, NULL);
+	    }
+	}
       break;
 
     case PT_CREATE_INDEX:

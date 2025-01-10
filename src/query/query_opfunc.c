@@ -2309,9 +2309,10 @@ qdata_coerce_result_to_domain (DB_VALUE * result_p, TP_DOMAIN * domain_p)
 
   if (domain_p != NULL)
     {
-      /* NUMERIC type operation allows precision 0 to reflect the result's any precision */
-      if (result_p->domain.numeric_info.type == DB_TYPE_NUMERIC
-	  && domain_p->type->id == DB_TYPE_NUMERIC && domain_p->precision == 0)
+      /* NUMERIC type operations allow to operate in a way that the result's scale are not truncated. */
+      if (result_p->domain.numeric_info.type == DB_TYPE_NUMERIC && domain_p->type->id == DB_TYPE_NUMERIC &&
+	  result_p->domain.numeric_info.precision >= domain_p->precision
+	  && result_p->domain.numeric_info.scale >= domain_p->scale)
 	{
 	  return NO_ERROR;
 	}
