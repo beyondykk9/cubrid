@@ -7902,20 +7902,6 @@ pt_eval_type (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_
 	  return NULL;
 	}
 #endif
-
-      /* set CAST as NUMERIC(any,any) for NUMERIC type expression */
-      if (node->info.expr.op != PT_CAST && pt_is_operator_arith (node->info.expr.op)
-	  && !PT_EXPR_INFO_IS_FLAGED (node, PT_EXPR_INFO_CAST_NUMERIC) && node->type_enum == PT_TYPE_NUMERIC)
-	{
-	  PT_EXPR_INFO_SET_FLAG (node, PT_EXPR_INFO_CAST_NUMERIC);
-	  node = pt_wrap_with_cast_op (parser, node, PT_TYPE_NUMERIC, 0, 0, NULL);
-	  if (node == NULL)
-	    {
-	      assert (false);
-	      PT_INTERNAL_ERROR (parser, "pt_eval_type");
-	      return NULL;
-	    }
-	}
       break;
 
     case PT_FUNCTION:
@@ -11603,6 +11589,13 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
 	{
 	  int integral_digits1, integral_digits2;
 
+	  /* for SP function */
+	  if (arg1_prec == 0 || arg2_prec == 0)
+	    {
+	      dt->info.data_type.precision = dt->info.data_type.dec_precision = 0;
+	      break;
+	    }
+
 	  integral_digits1 = arg1_prec - arg1_dec_prec;
 	  integral_digits2 = arg2_prec - arg2_dec_prec;
 	  dt->info.data_type.dec_precision = MAX (arg1_dec_prec, arg2_dec_prec);
@@ -11714,6 +11707,13 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
 	    }
 	  else
 	    {
+	      /* for SP function */
+	      if (arg1_prec == 0 || arg2_prec == 0)
+		{
+		  dt->info.data_type.precision = dt->info.data_type.dec_precision = 0;
+		  break;
+		}
+
 	      dt->info.data_type.precision = arg1_prec + arg2_prec + 1;
 	      dt->info.data_type.dec_precision = (arg1_dec_prec + arg2_dec_prec);
 	      dt->info.data_type.units = 0;
@@ -11734,6 +11734,13 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
 	  else
 	    {
 	      int scaleup = 0;
+
+	      /* for SP function */
+	      if (arg1_prec == 0 || arg2_prec == 0)
+		{
+		  dt->info.data_type.precision = dt->info.data_type.dec_precision = 0;
+		  break;
+		}
 
 	      if (arg2_dec_prec > 0)
 		{
@@ -11815,6 +11822,13 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
       else if (common_type == PT_TYPE_NUMERIC)
 	{
 	  int integral_digits1, integral_digits2;
+
+	  /* for SP function */
+	  if (arg1_prec == 0 || arg2_prec == 0)
+	    {
+	      dt->info.data_type.precision = dt->info.data_type.dec_precision = 0;
+	      break;
+	    }
 
 	  integral_digits1 = arg1_prec - arg1_dec_prec;
 	  integral_digits2 = arg2_prec - arg2_dec_prec;
