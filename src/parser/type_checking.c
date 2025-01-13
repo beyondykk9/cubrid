@@ -7919,9 +7919,9 @@ pt_eval_type (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_
 
       /* set CAST as NUMERIC(any,any) for NUMERIC type SP function */
       if (node->info.method_call.method_type == PT_SP_FUNCTION
-	  && !PT_EXPR_INFO_IS_FLAGED (node, PT_EXPR_INFO_CAST_NUMERIC) && node->type_enum == PT_TYPE_NUMERIC)
+	  && !PT_EXPR_INFO_IS_FLAGED (node, PT_EXPR_INFO_SP_NUMERIC) && node->type_enum == PT_TYPE_NUMERIC)
 	{
-	  PT_EXPR_INFO_SET_FLAG (node, PT_EXPR_INFO_CAST_NUMERIC);
+	  PT_EXPR_INFO_SET_FLAG (node, PT_EXPR_INFO_SP_NUMERIC);
 	  node = pt_wrap_with_cast_op (parser, node, PT_TYPE_NUMERIC, 0, 0, NULL);
 	  if (node == NULL)
 	    {
@@ -11592,7 +11592,8 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
 	  /* for SP function */
 	  if (arg1_prec == 0 || arg2_prec == 0)
 	    {
-	      dt->info.data_type.precision = dt->info.data_type.dec_precision = 0;
+	      dt->info.data_type.precision = DB_NUMERIC_PRECISION_ANY;
+	      dt->info.data_type.dec_precision = DB_NUMERIC_SCALE_ANY;
 	      break;
 	    }
 
@@ -11710,7 +11711,8 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
 	      /* for SP function */
 	      if (arg1_prec == 0 || arg2_prec == 0)
 		{
-		  dt->info.data_type.precision = dt->info.data_type.dec_precision = 0;
+		  dt->info.data_type.precision = DB_NUMERIC_PRECISION_ANY;
+		  dt->info.data_type.dec_precision = DB_NUMERIC_SCALE_ANY;
 		  break;
 		}
 
@@ -11738,7 +11740,8 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
 	      /* for SP function */
 	      if (arg1_prec == 0 || arg2_prec == 0)
 		{
-		  dt->info.data_type.precision = dt->info.data_type.dec_precision = 0;
+		  dt->info.data_type.precision = DB_NUMERIC_PRECISION_ANY;
+		  dt->info.data_type.dec_precision = DB_NUMERIC_SCALE_ANY;
 		  break;
 		}
 
@@ -11826,7 +11829,8 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
 	  /* for SP function */
 	  if (arg1_prec == 0 || arg2_prec == 0)
 	    {
-	      dt->info.data_type.precision = dt->info.data_type.dec_precision = 0;
+	      dt->info.data_type.precision = DB_NUMERIC_PRECISION_ANY;
+	      dt->info.data_type.dec_precision = DB_NUMERIC_SCALE_ANY;
 	      break;
 	    }
 

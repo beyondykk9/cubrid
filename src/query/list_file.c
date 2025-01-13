@@ -6238,7 +6238,8 @@ qfile_update_domains_on_type_list (THREAD_ENTRY * thread_p, QFILE_LIST_ID * list
 	}
 
       /* To prevent decimal points from being truncated */
-      if (TP_DOMAIN_TYPE (list_id_p->type_list.domp[count]) == DB_TYPE_NUMERIC)
+      if (TP_DOMAIN_TYPE (list_id_p->type_list.domp[count]) == DB_TYPE_NUMERIC
+	  && list_id_p->type_list.domp[count]->precision == DB_NUMERIC_PRECISION_ANY)
 	{
 	  list_id_p->type_list.domp[count] = reg_var_p->value.domain;
 	}

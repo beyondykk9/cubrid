@@ -6531,7 +6531,7 @@ qdata_get_dbval_from_constant_regu_variable (THREAD_ENTRY * thread_p, REGU_VARIA
 		  /* do not cast at here, is handled at analytic function evaluation later */
 		  ;
 		}
-	      else if (val_type == DB_TYPE_NUMERIC && regu_var_p->domain->precision == 0)
+	      else if (val_type == DB_TYPE_NUMERIC && regu_var_p->domain->precision == DB_NUMERIC_PRECISION_ANY)
 		{
 		  /*
 		   * When returning a Numeric type,
