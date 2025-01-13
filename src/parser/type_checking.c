@@ -7902,6 +7902,20 @@ pt_eval_type (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_
 	  return NULL;
 	}
 #endif
+
+      /* set CAST as NUMERIC(any,any) for NUMERIC type expression */
+      if (node->info.expr.op != PT_CAST && !PT_EXPR_INFO_IS_FLAGED (node, PT_EXPR_INFO_CAST_NUMERIC)
+	  && node->type_enum == PT_TYPE_NUMERIC)
+	{
+	  PT_EXPR_INFO_SET_FLAG (node, PT_EXPR_INFO_CAST_NUMERIC);
+	  node = pt_wrap_with_cast_op (parser, node, PT_TYPE_NUMERIC, 0, 0, NULL);
+	  if (node == NULL)
+	    {
+	      assert (false);
+	      PT_INTERNAL_ERROR (parser, "pt_eval_type");
+	      return NULL;
+	    }
+	}
       break;
 
     case PT_FUNCTION:
@@ -7916,14 +7930,18 @@ pt_eval_type (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_
 
     case PT_METHOD_CALL:
       node = pt_eval_method_call_type (parser, node);
-      if (node->info.method_call.method_type == PT_SP_FUNCTION && node->type_enum == PT_TYPE_NUMERIC)
+
+      /* set CAST as NUMERIC(any,any) for NUMERIC type SP function */
+      if (node->info.method_call.method_type == PT_SP_FUNCTION
+	  && !PT_EXPR_INFO_IS_FLAGED (node, PT_EXPR_INFO_CAST_NUMERIC) && node->type_enum == PT_TYPE_NUMERIC)
 	{
-	  /* not visited yet */
-	  if (node->info.data_type.precision > 0)
+	  PT_EXPR_INFO_SET_FLAG (node, PT_EXPR_INFO_CAST_NUMERIC);
+	  node = pt_wrap_with_cast_op (parser, node, PT_TYPE_NUMERIC, 0, 0, NULL);
+	  if (node == NULL)
 	    {
-	      /* it should visit once for cast op. */
-	      node->info.data_type.precision = 0;
-	      node = pt_wrap_with_cast_op (parser, node, PT_TYPE_NUMERIC, 0, 0, NULL);
+	      assert (false);
+	      PT_INTERNAL_ERROR (parser, "pt_eval_type");
+	      return NULL;
 	    }
 	}
       break;
