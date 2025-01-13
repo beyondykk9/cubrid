@@ -7904,7 +7904,8 @@ pt_eval_type (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_
 #endif
 
       /* set CAST as NUMERIC(any,any) for NUMERIC type expression */
-      if (node->info.expr.op != PT_CAST && !PT_EXPR_INFO_IS_FLAGED (node, PT_EXPR_INFO_CAST_NUMERIC)
+      if (node->info.expr.op != PT_CAST && node->info.expr.op != PT_ASSIGN
+	  && !pt_is_operator_logical (node->info.expr.op) && !PT_EXPR_INFO_IS_FLAGED (node, PT_EXPR_INFO_CAST_NUMERIC)
 	  && node->type_enum == PT_TYPE_NUMERIC)
 	{
 	  PT_EXPR_INFO_SET_FLAG (node, PT_EXPR_INFO_CAST_NUMERIC);
