@@ -7538,7 +7538,8 @@ resolve_domains_on_list_scan (LLIST_SCAN_ID * llsidp, val_list_node * ref_val_li
   for (scan_regu = llsidp->scan_pred.regu_list; scan_regu != NULL; scan_regu = scan_regu->next)
     {
       if ((TP_DOMAIN_TYPE (scan_regu->value.domain) == DB_TYPE_VARIABLE
-	   || (TP_DOMAIN_TYPE (scan_regu->value.domain) == DB_TYPE_NUMERIC && scan_regu->value.domain->precision == 0)
+	   || (TP_DOMAIN_TYPE (scan_regu->value.domain) == DB_TYPE_NUMERIC
+	       && scan_regu->value.domain->precision == DB_NUMERIC_PRECISION_ANY)
 	   || TP_DOMAIN_COLLATION_FLAG (scan_regu->value.domain)) && scan_regu->value.type == TYPE_POSITION)
 	{
 	  int pos = scan_regu->value.value.pos_descr.pos_no;
@@ -7562,7 +7563,8 @@ resolve_domains_on_list_scan (LLIST_SCAN_ID * llsidp, val_list_node * ref_val_li
   for (scan_regu = llsidp->rest_regu_list; scan_regu != NULL; scan_regu = scan_regu->next)
     {
       if ((TP_DOMAIN_TYPE (scan_regu->value.domain) == DB_TYPE_VARIABLE
-	   || (TP_DOMAIN_TYPE (scan_regu->value.domain) == DB_TYPE_NUMERIC && scan_regu->value.domain->precision == 0)
+	   || (TP_DOMAIN_TYPE (scan_regu->value.domain) == DB_TYPE_NUMERIC
+	       && scan_regu->value.domain->precision == DB_NUMERIC_PRECISION_ANY)
 	   || TP_DOMAIN_COLLATION_FLAG (scan_regu->value.domain) != TP_DOMAIN_COLL_NORMAL)
 	  && scan_regu->value.type == TYPE_POSITION)
 	{
