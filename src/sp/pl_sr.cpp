@@ -274,7 +274,7 @@ namespace cubpl
       }
     else
       {
-	er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SP_CANNOT_START_JVM, 1,
+	er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SP_CANNOT_START_PL_SERVER, 1,
 		m_db_name.c_str ());
 	return er_errid ();
       }
@@ -495,7 +495,7 @@ namespace cubpl
 	  {
 	    // After several failed attempts, we should consider the PL server is not able to start
 	    m_state = SERVER_MONITOR_STATE_FAILED_TO_INITIALIZE;
-	    er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SP_CANNOT_START_JVM, 1,
+	    er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SP_CANNOT_START_PL_SERVER, 1,
 		    "Failed to initialize the PL server. Verify that the server environment and configurations are properly set up");
 	    m_monitor_cv.notify_all ();
 	  }
@@ -517,7 +517,7 @@ namespace cubpl
 	      {
 		// After several failed attempts, we should consider the PL server is not able to start
 		m_state = SERVER_MONITOR_STATE_FAILED_TO_INITIALIZE;
-		er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SP_CANNOT_START_JVM, 1,
+		er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SP_CANNOT_START_PL_SERVER, 1,
 			"Failed to initialize the PL server. Verify that the server environment and configurations are properly set up");
 		m_monitor_cv.notify_all ();
 	      }
@@ -711,7 +711,7 @@ PL_CONNECTION_POOL *get_connection_pool ()
     }
   else
     {
-      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SP_NOT_RUNNING_JVM, 0);
+      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_SP_NOT_RUNNING_PL_SERVER, 0);
       return nullptr;
     }
 }
