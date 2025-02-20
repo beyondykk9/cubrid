@@ -72,6 +72,7 @@ xtran_server_commit (THREAD_ENTRY * thread_p, bool retain_lock)
 {
   TRAN_STATE state;
   int tran_index;
+  QMGR_TRAN_STATUS status;
 
   /*
    * Execute some few remaining actions before the log manager is notified of
@@ -80,7 +81,15 @@ xtran_server_commit (THREAD_ENTRY * thread_p, bool retain_lock)
 
   tran_index = LOG_FIND_THREAD_TRAN_INDEX (thread_p);
 
-  state = log_commit (thread_p, tran_index, retain_lock);
+  status = qmgr_check_dblink_trans (thread_p, tran_index, false);
+  if (status == QMGR_TRAN_DBLINK_ABORTED)
+    {
+      state = log_abort (thread_p, tran_index);
+    }
+  else
+    {
+      state = log_commit (thread_p, tran_index, retain_lock);
+    }
 
 #if defined(ENABLE_SYSTEMTAP)
   if (state == TRAN_UNACTIVE_COMMITTED || state == TRAN_UNACTIVE_COMMITTED_INFORMING_PARTICIPANTS)
@@ -119,6 +128,9 @@ xtran_server_abort (THREAD_ENTRY * thread_p)
 
   /* Execute some few remaining actions before the log manager is notified of the commit */
   tran_index = LOG_FIND_THREAD_TRAN_INDEX (thread_p);
+
+  /* dblink'ed transaction should be aborted first */
+  (void) qmgr_check_dblink_trans (thread_p, tran_index, true);
 
   state = log_abort (thread_p, tran_index);
 
