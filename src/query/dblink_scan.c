@@ -543,8 +543,39 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 }
 
 int
+dblink_end_tran (int conn_handle, bool is_abort)
+{
+  int rc;
+  T_CCI_ERROR err_buf;
+
+  if (is_abort)
+    {
+      rc = cci_end_tran (conn_handle, CCI_TRAN_ROLLBACK, &err_buf);
+    }
+  else
+    {
+      rc = cci_end_tran (conn_handle, CCI_TRAN_COMMIT, &err_buf);
+    }
+  if (rc < 0)
+    {
+      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
+      return rc;
+    }
+
+  rc = cci_disconnect (conn_handle, &err_buf);
+  if (rc < 0)
+    {
+      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
+      return rc;
+    }
+
+  return rc;
+}
+
+int
 dblink_execute_query (struct access_spec_node *spec, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars)
 {
+  static bool auto_commit = prm_get_bool_value (PRM_ID_DBLINK_AUTO_COMMIT);
   int ret = NO_ERROR, result, conn_handle, stmt_handle;
   T_CCI_ERROR err_buf;
   char conn_url[MAX_LEN_CONNECTION_URL] = { 0, };
@@ -570,7 +601,15 @@ dblink_execute_query (struct access_spec_node *spec, VAL_DESCR * vd, DBLINK_HOST
     }
   else
     {
-      cci_set_autocommit (conn_handle, CCI_AUTOCOMMIT_TRUE);
+      if (auto_commit)
+	{
+	  cci_set_autocommit (conn_handle, CCI_AUTOCOMMIT_TRUE);
+	}
+      else
+	{
+	  cci_set_autocommit (conn_handle, CCI_AUTOCOMMIT_FALSE);
+	}
+
       stmt_handle = cci_prepare (conn_handle, sql_text, 0, &err_buf);
       if (stmt_handle < 0)
 	{
@@ -592,13 +631,14 @@ dblink_execute_query (struct access_spec_node *spec, VAL_DESCR * vd, DBLINK_HOST
 	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
 	  goto error_exit;
 	}
-
+#if 0
       ret = cci_disconnect (conn_handle, &err_buf);
       if (ret < 0)
 	{
 	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
 	  goto error_exit;
 	}
+#endif
     }
 
   return result;

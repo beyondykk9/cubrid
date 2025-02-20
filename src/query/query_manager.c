@@ -2070,6 +2070,20 @@ xqmgr_end_query (THREAD_ENTRY * thread_p, QUERY_ID query_id)
       rc = qmgr_free_query_temp_file (thread_p, query_p, tran_index);
     }
 
+  if (query_p->xasl_ent->one_clone.xasl->spec_list
+      && query_p->xasl_ent->one_clone.xasl->spec_list->type == TARGET_DBLINK)
+    {
+      struct access_spec_node *spec = query_p->xasl_ent->one_clone.xasl->spec_list;
+      if (spec)
+	{
+	  int rc = dblink_end_tran (spec->s.dblink_node.conn_handle, false);
+	  if (rc != NO_ERROR)
+	    {
+	      er_log_debug (ARG_FILE_LINE, "dblink query %d not completed !\n", query_p->query_id);
+	    }
+	}
+    }
+
   XASL_ID_SET_NULL (&query_p->xasl_id);
 
   qmgr_delete_query_entry (thread_p, query_p->query_id, tran_index);
@@ -2251,6 +2265,22 @@ qmgr_clear_trans_wakeup (THREAD_ENTRY * thread_p, int tran_index, bool is_tran_d
   query_p = tran_entry_p->query_entry_list_p;
   while (query_p)
     {
+      if (query_p->xasl_ent)
+	{
+	  if (query_p->xasl_ent->one_clone.xasl->spec_list->type == TARGET_DBLINK)
+	    {
+	      struct access_spec_node *spec = query_p->xasl_ent->one_clone.xasl->spec_list;
+	      if (spec)
+		{
+		  int rc = dblink_end_tran (spec->s.dblink_node.conn_handle, is_abort);
+		  if (rc != NO_ERROR)
+		    {
+		      er_log_debug (ARG_FILE_LINE, "dblink query %d not completed !\n", query_p->query_id);
+		    }
+		}
+	    }
+	}
+
       if (query_p->is_holdable)
 	{
 	  if (is_abort || is_tran_died)
