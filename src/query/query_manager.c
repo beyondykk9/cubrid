@@ -2212,6 +2212,8 @@ qmgr_check_dblink_trans (THREAD_ENTRY * thread_p, int tran_index, bool is_abort)
 		}
 	    }
 	}
+
+      query_p = query_p->next;
     }
 
   return status;
