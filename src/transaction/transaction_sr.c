@@ -74,6 +74,8 @@ xtran_server_commit (THREAD_ENTRY * thread_p, bool retain_lock)
   int tran_index;
   QMGR_TRAN_STATUS status;
 
+  static bool auto_commit = prm_get_bool_value (PRM_ID_DBLINK_AUTO_COMMIT);
+
   /*
    * Execute some few remaining actions before the log manager is notified of
    * the commit
@@ -81,10 +83,17 @@ xtran_server_commit (THREAD_ENTRY * thread_p, bool retain_lock)
 
   tran_index = LOG_FIND_THREAD_TRAN_INDEX (thread_p);
 
-  status = qmgr_check_dblink_trans (thread_p, tran_index, false);
-  if (status == QMGR_TRAN_DBLINK_ABORTED)
+  if (auto_commit == false)
     {
-      state = log_abort (thread_p, tran_index);
+      status = qmgr_check_dblink_trans (thread_p, tran_index, false);
+      if (status == QMGR_TRAN_DBLINK_ABORTED)
+	{
+	  state = log_abort (thread_p, tran_index);
+	}
+      else
+	{
+	  state = log_commit (thread_p, tran_index, retain_lock);
+	}
     }
   else
     {
@@ -126,11 +135,16 @@ xtran_server_abort (THREAD_ENTRY * thread_p)
   TRAN_STATE state;
   int tran_index;
 
+  static bool auto_commit = prm_get_bool_value (PRM_ID_DBLINK_AUTO_COMMIT);
+
   /* Execute some few remaining actions before the log manager is notified of the commit */
   tran_index = LOG_FIND_THREAD_TRAN_INDEX (thread_p);
 
   /* dblink'ed transaction should be aborted first */
-  (void) qmgr_check_dblink_trans (thread_p, tran_index, true);
+  if (auto_commit == false)
+    {
+      (void) qmgr_check_dblink_trans (thread_p, tran_index, true);
+    }
 
   state = log_abort (thread_p, tran_index);
 
