@@ -35,7 +35,7 @@ import com.cubrid.plcsql.compiler.visitor.AstVisitor;
 import java.util.Set;
 import org.antlr.v4.runtime.ParserRuleContext;
 
-public class ExprFloat extends Expr {
+public class ExprFloat extends Expr implements SqlLiteral {
 
     @Override
     public <R> R accept(AstVisitor<R> visitor) {
@@ -55,9 +55,9 @@ public class ExprFloat extends Expr {
     public String javaCode(Set<String> javaTypesUsed) {
         switch (ty.idx) {
             case Type.IDX_DOUBLE:
-                return "new Double(\"" + val + "\")";
+                return "checkDouble(new Double(\"" + val + "\"))";
             case Type.IDX_FLOAT:
-                return "new Float(\"" + val + "\")";
+                return "checkFloat(new Float(\"" + val + "\"))";
             case Type.IDX_NUMERIC:
                 javaTypesUsed.add("java.math.BigDecimal");
                 return "new BigDecimal(\"" + val + "\")";

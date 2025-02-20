@@ -31,12 +31,11 @@
 package com.cubrid.plcsql.predefined.sp;
 
 import com.cubrid.jsp.Server;
-import com.cubrid.jsp.exception.TypeMismatchException;
+import com.cubrid.jsp.SysParam;
+import com.cubrid.jsp.context.Context;
 import com.cubrid.jsp.value.DateTimeParser;
-import com.cubrid.jsp.value.ValueUtilities;
 import com.cubrid.plcsql.builtin.DBMS_OUTPUT;
 import com.cubrid.plcsql.compiler.CoercionScheme;
-import com.cubrid.plcsql.compiler.SymbolStack;
 import com.cubrid.plcsql.compiler.annotation.Operator;
 import com.cubrid.plcsql.compiler.type.Type;
 import com.cubrid.plcsql.predefined.PlcsqlRuntimeError;
@@ -50,11 +49,10 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
-import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
@@ -62,6 +60,82 @@ import java.util.Stack;
 import java.util.regex.PatternSyntaxException;
 
 public class SpLib {
+
+    public static final Date ZERO_DATE = new Date(0 - 1900, 0 - 1, 0);
+    public static final Timestamp ZERO_DATETIME = new Timestamp(0 - 1900, 0 - 1, 0, 0, 0, 0, 0);
+
+    public static boolean isZeroTimestamp(Timestamp ts) {
+        return (ts != null && (ts.equals(ZERO_TIMESTAMP) || ts.equals(ZERO_TIMESTAMP_2)));
+    }
+
+    public static boolean checkDate(Date d) {
+        if (d == null) {
+            return false;
+        }
+
+        if (d.equals(ZERO_DATE)) {
+            return true;
+        }
+
+        return d.compareTo(MIN_DATE) >= 0 && d.compareTo(MAX_DATE) <= 0;
+    }
+
+    public static Timestamp checkTimestamp(Timestamp ts) {
+        if (ts == null) {
+            return null;
+        }
+
+        // '1970-01-01 00:00:00' (GMT) amounts to the Null Timestamp '0000-00-00 00:00:00' in CUBRID
+        if (isZeroTimestamp(ts)) {
+            return ZERO_TIMESTAMP;
+        }
+
+        if (ts.compareTo(MIN_TIMESTAMP) >= 0 && ts.compareTo(MAX_TIMESTAMP) <= 0) {
+            return ts;
+        } else {
+            return null;
+        }
+    }
+
+    public static boolean checkDatetime(Timestamp dt) {
+        if (dt == null) {
+            return false;
+        }
+
+        if (dt.equals(ZERO_DATETIME)) {
+            return true;
+        }
+
+        return dt.compareTo(MIN_DATETIME) >= 0 && dt.compareTo(MAX_DATETIME) <= 0;
+    }
+
+    public static Float checkFloat(Float f) {
+
+        assert f != null;
+
+        if (f.isInfinite()) {
+            throw new VALUE_ERROR("data overflow on data type FLOAT");
+        }
+        if (f.isNaN()) {
+            throw new VALUE_ERROR("not a valid FLOAT value");
+        }
+
+        return f;
+    }
+
+    public static Double checkDouble(Double d) {
+
+        assert d != null;
+
+        if (d.isInfinite()) {
+            throw new VALUE_ERROR("data overflow on data type DOUBLE");
+        }
+        if (d.isNaN()) {
+            throw new VALUE_ERROR("not a valid DOUBLE value");
+        }
+
+        return d;
+    }
 
     public static Timestamp parseTimestampStr(String s) {
         // parse again at runtime in order to use the runtime value of timezone setting
@@ -74,7 +148,7 @@ public class SpLib {
         }
 
         if (timestamp.equals(DateTimeParser.nullDatetimeGMT)) {
-            return ValueUtilities.NULL_TIMESTAMP;
+            return ZERO_TIMESTAMP;
         } else {
             return new Timestamp(timestamp.toEpochSecond() * 1000);
         }
@@ -150,9 +224,6 @@ public class SpLib {
     // -------------------------------------------------------------------------------
     // To provide line and column numbers for run-time exceptions
     //
-
-    private static final String EMPTY_STRING = "";
-    private static final int[] UNKNOWN_LINE_COLUMN = new int[] {-1, -1};
 
     public static int[] getPlcLineColumn(
             List<CodeRangeMarker> crmList, Throwable thrown, String fileName) {
@@ -246,20 +317,18 @@ public class SpLib {
     // To provide line and column numbers for run-time exceptions
     // -------------------------------------------------------------------------------
 
-    public static Object invokeBuiltinFunc(
-            Connection conn, String name, int resultTypeCode, Object... args) {
+    private static final Object[] SINGLE_NULL_ARG = new Object[] {null};
 
-        assert args != null;
+    public static Object invokeBuiltinFunc(
+            Connection conn, String callStr, int resultTypeCode, Object... args) {
+
+        if (args == null) {
+            args = SINGLE_NULL_ARG;
+        }
 
         int argsLen = args.length;
-        String hostVars;
-        if (SymbolStack.noParenBuiltInFunc.indexOf(name) >= 0) {
-            assert argsLen == 0;
-            hostVars = "";
-        } else {
-            hostVars = getHostVarsStr(argsLen);
-        }
-        String query = String.format("select %s%s from dual", name, hostVars);
+        String query = String.format("select %s from dual", callStr);
+
         try {
             PreparedStatement pstmt = conn.prepareStatement(query);
             for (int i = 0; i < argsLen; i++) {
@@ -458,17 +527,24 @@ public class SpLib {
     // builtin exceptions
     // ---------------------------------------------------------------------------------------
 
+    private static int checkAppErrCode(int code) {
+        if (code <= CODE_APP_ERROR) {
+            throw new VALUE_ERROR(
+                    "exception codes below " + (CODE_APP_ERROR + 1) + " are reserved");
+        }
+
+        return code;
+    }
+
     // user defined exception
     public static class $APP_ERROR extends PlcsqlRuntimeError {
         public $APP_ERROR(int code, String msg) {
-            super(code, isEmptyStr(msg) ? MSG_APP_ERROR : msg);
-        }
-
-        public $APP_ERROR(String msg) {
-            super(CODE_APP_ERROR, isEmptyStr(msg) ? MSG_APP_ERROR : msg);
+            // called for raise_application_error(...)
+            super(checkAppErrCode(code), isEmptyStr(msg) ? MSG_APP_ERROR : msg);
         }
 
         public $APP_ERROR() {
+            // called for user defined exceptions
             super(CODE_APP_ERROR, MSG_APP_ERROR);
         }
     }
@@ -510,6 +586,7 @@ public class SpLib {
     public static class Query {
         public final String query;
         public ResultSet rs;
+        public int rowCount;
 
         public Query(String query) {
             this.query = query;
@@ -588,12 +665,15 @@ public class SpLib {
         }
 
         public long rowCount() {
+            if (!isOpen()) {
+                throw new INVALID_CURSOR("attempted to read an attribute of an unopened cursor");
+            }
+            return (long) rowCount;
+        }
+
+        public void updateRowCount() {
             try {
-                if (!isOpen()) {
-                    throw new INVALID_CURSOR(
-                            "attempted to read an attribute of an unopened cursor");
-                }
-                return (long) rs.getRow();
+                rowCount = rs.getRow();
             } catch (SQLException e) {
                 Server.log(e);
                 throw new SQL_ERROR(e.getMessage());
@@ -619,7 +699,7 @@ public class SpLib {
     // is null
     @Operator(coercionScheme = CoercionScheme.ObjectOp)
     public static Boolean opIsNull(Object l) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -635,7 +715,7 @@ public class SpLib {
         if (l == null) {
             return null;
         }
-        return ((short) -l);
+        return negateShortExact(l);
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -643,7 +723,11 @@ public class SpLib {
         if (l == null) {
             return null;
         }
-        return -l;
+        try {
+            return Math.negateExact(l);
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow in negation of an INTEGER value");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -651,7 +735,11 @@ public class SpLib {
         if (l == null) {
             return null;
         }
-        return -l;
+        try {
+            return Math.negateExact(l);
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow in negation of a BIGINT value");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -667,7 +755,11 @@ public class SpLib {
         if (l == null) {
             return null;
         }
-        return -l;
+        try {
+            return checkFloat(-l);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in negation of a FLOAT value");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -675,12 +767,16 @@ public class SpLib {
         if (l == null) {
             return null;
         }
-        return -l;
+        try {
+            return checkDouble(-l);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in negation of a DOUBLE value");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
     public static Object opNeg(Object l) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -755,7 +851,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.IntArithOp)
     public static Object opBitCompli(Object l) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -842,7 +938,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opEq(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -855,7 +951,7 @@ public class SpLib {
     }
 
     public static Boolean opEqChar(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -938,7 +1034,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opEq(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -963,7 +1059,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opNullSafeEq(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -976,7 +1072,7 @@ public class SpLib {
     }
 
     public static Boolean opNullSafeEqChar(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1071,7 +1167,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opNullSafeEq(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1099,7 +1195,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opNeq(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1186,7 +1282,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opNeq(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1212,7 +1308,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opLe(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1225,7 +1321,7 @@ public class SpLib {
     }
 
     public static Boolean opLeChar(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1308,7 +1404,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opLe(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1332,7 +1428,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opGe(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1345,7 +1441,7 @@ public class SpLib {
     }
 
     public static Boolean opGeChar(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1428,7 +1524,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opGe(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1452,7 +1548,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opLt(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1465,7 +1561,7 @@ public class SpLib {
     }
 
     public static Boolean opLtChar(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1548,7 +1644,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opLt(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1573,7 +1669,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opGt(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1586,7 +1682,7 @@ public class SpLib {
     }
 
     public static Boolean opGtChar(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1669,7 +1765,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.CompOp)
     public static Boolean opGt(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -1697,7 +1793,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.NAryCompOp)
     public static Boolean opBetween(String o, String lower, String upper) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(o)) {
                 o = null;
             }
@@ -1716,7 +1812,7 @@ public class SpLib {
     }
 
     public static Boolean opBetweenChar(String o, String lower, String upper) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(o)) {
                 o = null;
             }
@@ -1831,7 +1927,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.NAryCompOp)
     public static Boolean opBetween(Object o, Object lower, Object upper) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(o)) {
                 o = null;
             }
@@ -1869,7 +1965,7 @@ public class SpLib {
     public static Boolean opInChar(String o, String... arr) {
         assert arr != null;
 
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(o)) {
                 o = null;
             }
@@ -1882,7 +1978,7 @@ public class SpLib {
 
         boolean nullFound = false;
         for (String p : arr) {
-            if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+            if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
                 if (EMPTY_STRING.equals(p)) {
                     p = null;
                 }
@@ -1987,7 +2083,7 @@ public class SpLib {
     public static Boolean opIn(Object o, Object... arr) {
         assert arr != null;
 
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(o)) {
                 o = null;
             }
@@ -1998,7 +2094,7 @@ public class SpLib {
         }
         boolean nullFound = false;
         for (Object p : arr) {
-            if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+            if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
                 if (EMPTY_STRING.equals(p)) {
                     p = null;
                 }
@@ -2021,7 +2117,7 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return (short) (l * r);
+        return multiplyShortExact(l, r);
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2029,7 +2125,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l * r;
+        try {
+            return Math.multiplyExact(l, r);
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow in multiplication of INTEGER values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2037,7 +2137,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l * r;
+        try {
+            return Math.multiplyExact(l, r);
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow in multiplication of BIGINT values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2069,7 +2173,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l * r;
+        try {
+            return checkFloat(l * r);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in multiplication of two FLOAT values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2077,12 +2185,16 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l * r;
+        try {
+            return checkDouble(l * r);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in multiplication of two DOUBLE values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
     public static Object opMult(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -2108,7 +2220,7 @@ public class SpLib {
         if (r.equals((short) 0)) {
             throw new ZERO_DIVIDE();
         }
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
             return opDiv(BigDecimal.valueOf(l.longValue()), BigDecimal.valueOf(r.longValue()));
         } else {
             return (short) (l / r);
@@ -2123,7 +2235,7 @@ public class SpLib {
         if (r.equals(0)) {
             throw new ZERO_DIVIDE();
         }
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
             return opDiv(BigDecimal.valueOf(l.longValue()), BigDecimal.valueOf(r.longValue()));
         } else {
             return l / r;
@@ -2139,7 +2251,7 @@ public class SpLib {
             throw new ZERO_DIVIDE();
         }
 
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
             return opDiv(BigDecimal.valueOf(l), BigDecimal.valueOf(r));
         } else {
             return l / r;
@@ -2161,7 +2273,7 @@ public class SpLib {
         int s2 = r.scale();
 
         int scale;
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_COMPAT_NUMERIC_DIVISION_SCALE)) {
+        if (Context.getSystemParameterBool(SysParam.COMPAT_NUMERIC_DIVISION_SCALE)) {
             scale = Math.max(s1, s2);
         } else {
             scale = Math.max(9, Math.max(s1, s2));
@@ -2172,7 +2284,7 @@ public class SpLib {
                 l.divide(r, new MathContext(maxPrecision, RoundingMode.HALF_UP))
                         .setScale(scale, RoundingMode.HALF_UP);
         if (ret.precision() > 38) {
-            throw new VALUE_ERROR("data overflow");
+            throw new VALUE_ERROR("data overflow in division of NUMERIC values");
         }
 
         return ret;
@@ -2186,7 +2298,11 @@ public class SpLib {
         if (r.equals(0.0f)) {
             throw new ZERO_DIVIDE();
         }
-        return l / r;
+        try {
+            return checkFloat(l / r);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in division of two FLOAT values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2197,12 +2313,16 @@ public class SpLib {
         if (r.equals(0.0)) {
             throw new ZERO_DIVIDE();
         }
-        return l / r;
+        try {
+            return checkDouble(l / r);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in division of two DOUBLE values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
     public static Object opDiv(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -2255,7 +2375,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.IntArithOp)
     public static Object opDivInt(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -2308,7 +2428,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.IntArithOp)
     public static Object opMod(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -2328,7 +2448,7 @@ public class SpLib {
     // +
     @Operator(coercionScheme = CoercionScheme.ArithOp)
     public static String opAdd(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (l == null) {
                 l = EMPTY_STRING;
             }
@@ -2348,7 +2468,7 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return (short) (l + r);
+        return addShortExact(l, r);
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2356,7 +2476,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l + r;
+        try {
+            return Math.addExact(l, r);
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow in addition of INTEGER values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2364,7 +2488,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l + r;
+        try {
+            return Math.addExact(l, r);
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow in addition of BIGINT values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2396,7 +2524,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l + r;
+        try {
+            return checkFloat(l + r);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in addition of two FLOAT values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2404,7 +2536,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l + r;
+        try {
+            return checkDouble(l + r);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in addition of two DOUBLE values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2426,13 +2562,13 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_DATE)) {
+        if (l.equals(ZERO_DATE)) {
             throw new VALUE_ERROR("attempt to use the zero DATE");
         }
 
         LocalDate lld = l.toLocalDate();
         Date ret = Date.valueOf(lld.plusDays(r.longValue()));
-        if (ValueUtilities.checkValidDate(ret)) {
+        if (checkDate(ret)) {
             return ret;
         } else {
             throw new VALUE_ERROR("not in the valid range of DATE type");
@@ -2449,13 +2585,13 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_DATETIME)) {
+        if (l.equals(ZERO_DATETIME)) {
             throw new VALUE_ERROR("attempt to use the zero DATETIME");
         }
 
         LocalDateTime lldt = l.toLocalDateTime();
         Timestamp ret = Timestamp.valueOf(lldt.plus(r.longValue(), ChronoUnit.MILLIS));
-        if (ValueUtilities.checkValidDatetime(ret)) {
+        if (checkDatetime(ret)) {
             return ret;
         } else {
             throw new VALUE_ERROR("not in the valid range of DATETIME type");
@@ -2473,14 +2609,15 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_TIMESTAMP)) {
+        if (isZeroTimestamp(l)) {
             throw new VALUE_ERROR("attempt to use the zero TIMESTAMP");
         }
         assert l.getNanos() == 0;
 
         LocalDateTime lldt = l.toLocalDateTime();
         Timestamp ret = Timestamp.valueOf(lldt.plus(r.longValue(), ChronoUnit.SECONDS));
-        if (ValueUtilities.checkValidTimestamp(ret)) {
+        ret = checkTimestamp(ret);
+        if (ret != null) {
             return ret;
         } else {
             throw new VALUE_ERROR("not in the valid range of TIMESTAMP type");
@@ -2505,7 +2642,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
     public static Object opAdd(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -2528,7 +2665,7 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return (short) (l - r);
+        return subtractShortExact(l, r);
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2536,7 +2673,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l - r;
+        try {
+            return Math.subtractExact(l, r);
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow in subtraction of INTEGER values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2544,7 +2685,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l - r;
+        try {
+            return Math.subtractExact(l, r);
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow in subtraction of BIGINT values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2579,7 +2724,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l - r;
+        try {
+            return checkFloat(l - r);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in subtraction of two FLOAT values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2587,7 +2736,11 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        return l - r;
+        try {
+            return checkDouble(l - r);
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow in subtraction of two DOUBLE values");
+        }
     }
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
@@ -2605,7 +2758,7 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_DATE) || r.equals(ValueUtilities.NULL_DATE)) {
+        if (l.equals(ZERO_DATE) || r.equals(ZERO_DATE)) {
             throw new VALUE_ERROR("attempt to use the zero DATE");
         }
 
@@ -2619,7 +2772,7 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_DATETIME) || r.equals(ValueUtilities.NULL_DATETIME)) {
+        if (l.equals(ZERO_DATETIME) || r.equals(ZERO_DATETIME)) {
             throw new VALUE_ERROR("attempt to use the zero DATETIME");
         }
 
@@ -2639,7 +2792,7 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_TIMESTAMP) || r.equals(ValueUtilities.NULL_TIMESTAMP)) {
+        if (isZeroTimestamp(l) || isZeroTimestamp(r)) {
             throw new VALUE_ERROR("attempt to use the zero TIMESTAMP");
         }
         assert l.getNanos() == 0;
@@ -2664,13 +2817,13 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_DATE)) {
+        if (l.equals(ZERO_DATE)) {
             throw new VALUE_ERROR("attempt to use the zero DATE");
         }
 
         LocalDate lld = l.toLocalDate();
         Date ret = Date.valueOf(lld.minusDays(r.longValue()));
-        if (ValueUtilities.checkValidDate(ret)) {
+        if (checkDate(ret)) {
             return ret;
         } else {
             throw new VALUE_ERROR("not in the valid range of DATE type");
@@ -2682,13 +2835,13 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_DATETIME)) {
+        if (l.equals(ZERO_DATETIME)) {
             throw new VALUE_ERROR("attempt to use the zero DATETIME");
         }
 
         LocalDateTime lldt = l.toLocalDateTime();
         Timestamp ret = Timestamp.valueOf(lldt.minus(r.longValue(), ChronoUnit.MILLIS));
-        if (ValueUtilities.checkValidDatetime(ret)) {
+        if (checkDatetime(ret)) {
             return ret;
         } else {
             throw new VALUE_ERROR("not in the valid range of DATETIME type");
@@ -2706,14 +2859,15 @@ public class SpLib {
         if (l == null || r == null) {
             return null;
         }
-        if (l.equals(ValueUtilities.NULL_TIMESTAMP)) {
+        if (isZeroTimestamp(l)) {
             throw new VALUE_ERROR("attempt to use the zero TIMESTAMP");
         }
         assert l.getNanos() == 0;
 
         LocalDateTime lldt = l.toLocalDateTime();
         Timestamp ret = Timestamp.valueOf(lldt.minus(r.longValue(), ChronoUnit.SECONDS));
-        if (ValueUtilities.checkValidTimestamp(ret)) {
+        ret = checkTimestamp(ret);
+        if (ret != null) {
             return ret;
         } else {
             throw new VALUE_ERROR("not in the valid range of TIMESTAMP type");
@@ -2722,7 +2876,7 @@ public class SpLib {
 
     @Operator(coercionScheme = CoercionScheme.ArithOp)
     public static Object opSubtract(Object l, Object r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(l)) {
                 l = null;
             }
@@ -2742,7 +2896,7 @@ public class SpLib {
     // ||
     @Operator(coercionScheme = CoercionScheme.StringOp)
     public static String opConcat(String l, String r) {
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (l == null) {
                 l = EMPTY_STRING;
             }
@@ -2835,8 +2989,8 @@ public class SpLib {
         if (e == null) {
             return null;
         }
-        if (e.equals(ValueUtilities.NULL_DATETIME)) {
-            return ValueUtilities.NULL_DATE;
+        if (e.equals(ZERO_DATETIME)) {
+            return ZERO_DATE;
         }
 
         return new Date(e.getYear(), e.getMonth(), e.getDate());
@@ -2854,8 +3008,8 @@ public class SpLib {
         if (e == null) {
             return null;
         }
-        if (e.equals(ValueUtilities.NULL_DATETIME)) {
-            return ValueUtilities.NULL_TIMESTAMP;
+        if (e.equals(ZERO_DATETIME)) {
+            return ZERO_TIMESTAMP;
         }
 
         Timestamp ret =
@@ -2867,7 +3021,8 @@ public class SpLib {
                         e.getMinutes(),
                         e.getSeconds(),
                         0);
-        if (ValueUtilities.checkValidTimestamp(ret)) {
+        ret = checkTimestamp(ret);
+        if (ret != null) {
             return ret;
         } else {
             throw new VALUE_ERROR("not in the valid range of TIMESTAMP type");
@@ -2878,10 +3033,10 @@ public class SpLib {
         if (e == null) {
             return null;
         }
-        if (e.equals(ValueUtilities.NULL_DATETIME)) {
+        if (e.equals(ZERO_DATETIME)) {
             // must be calculated everytime because the AM/PM indicator can change according to the
             // locale change
-            return String.format("00:00:00.000 %s 00/00/0000", AM_PM.format(ZERO_DATE));
+            return String.format("12:00:00.000 %s 00/00/0000", AM_PM.format(ZERO_DATE));
         }
 
         return DATETIME_FORMAT.format(e);
@@ -2892,8 +3047,8 @@ public class SpLib {
         if (e == null) {
             return null;
         }
-        if (e.equals(ValueUtilities.NULL_DATE)) {
-            return ValueUtilities.NULL_DATETIME;
+        if (e.equals(ZERO_DATE)) {
+            return ZERO_DATETIME;
         }
 
         return new Timestamp(e.getYear(), e.getMonth(), e.getDate(), 0, 0, 0, 0);
@@ -2903,12 +3058,13 @@ public class SpLib {
         if (e == null) {
             return null;
         }
-        if (e.equals(ValueUtilities.NULL_DATE)) {
-            return ValueUtilities.NULL_TIMESTAMP;
+        if (e.equals(ZERO_DATE)) {
+            return ZERO_TIMESTAMP;
         }
 
         Timestamp ret = new Timestamp(e.getYear(), e.getMonth(), e.getDate(), 0, 0, 0, 0);
-        if (ValueUtilities.checkValidTimestamp(ret)) {
+        ret = checkTimestamp(ret);
+        if (ret != null) {
             return ret;
         } else {
             throw new VALUE_ERROR("not in the valid range of TIMESTAMP type");
@@ -2919,7 +3075,7 @@ public class SpLib {
         if (e == null) {
             return null;
         }
-        if (e.equals(ValueUtilities.NULL_DATE)) {
+        if (e.equals(ZERO_DATE)) {
             return "00/00/0000";
         }
 
@@ -2941,8 +3097,8 @@ public class SpLib {
             return null;
         }
 
-        if (e.equals(ValueUtilities.NULL_TIMESTAMP)) {
-            return ValueUtilities.NULL_DATETIME;
+        if (isZeroTimestamp(e)) {
+            return ZERO_DATETIME;
         }
         assert e.getNanos() == 0;
 
@@ -2961,8 +3117,8 @@ public class SpLib {
             return null;
         }
 
-        if (e.equals(ValueUtilities.NULL_TIMESTAMP)) {
-            return ValueUtilities.NULL_DATE;
+        if (isZeroTimestamp(e)) {
+            return ZERO_DATE;
         }
         assert e.getNanos() == 0;
 
@@ -2984,14 +3140,14 @@ public class SpLib {
         }
         assert e.getNanos() == 0;
 
-        if (e.equals(ValueUtilities.NULL_TIMESTAMP)) {
+        if (isZeroTimestamp(e)) {
             // must be calculated everytime because the AM/PM indicator can change according to the
             // locale change
-            return String.format("00:00:00 %s 00/00/0000", AM_PM.format(ZERO_DATE));
+            return String.format("12:00:00 %s 00/00/0000", AM_PM.format(ZERO_DATE));
         }
 
         Instant instant = Instant.ofEpochMilli(e.getTime());
-        ZoneOffset timezone = Server.getSystemParameterTimezone(Server.SYS_PARAM_TIMEZONE);
+        ZoneId timezone = Server.getConfig().getTimeZone();
         ZonedDateTime zdt = ZonedDateTime.ofInstant(instant, timezone);
         return zdt.format(TIMESTAMP_FORMAT);
     }
@@ -3031,13 +3187,22 @@ public class SpLib {
         return Short.valueOf(doubleToShort(e.doubleValue()));
     }
 
+    public static Byte convDoubleToByte(Double e) {
+        if (e == null) {
+            return null;
+        }
+
+        return Byte.valueOf(doubleToByte(e.doubleValue()));
+    }
+
     public static String convDoubleToString(Double e) {
         if (e == null) {
             return null;
         }
 
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
-            return detachTrailingZeros(String.format("%.15f", e));
+        if (Context.getSystemParameterBool(SysParam.ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
+            BigDecimal bd = new BigDecimal(e.doubleValue(), doubleToStringContext);
+            return detachTrailingZeros(bd.toPlainString());
         } else {
             return String.format("%.15e", e);
         }
@@ -3048,7 +3213,11 @@ public class SpLib {
             return null;
         }
 
-        return Float.valueOf(e.floatValue());
+        try {
+            return checkFloat(Float.valueOf(e.floatValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type FLOAT: " + convDoubleToString(e));
+        }
     }
 
     public static BigDecimal convDoubleToNumeric(Double e) {
@@ -3056,7 +3225,7 @@ public class SpLib {
             return null;
         }
 
-        return BigDecimal.valueOf(e.doubleValue());
+        return BigDecimal.valueOf(e.doubleValue()).round(doubleToNumericContext);
     }
 
     public static Long convDoubleToBigint(Double e) {
@@ -3102,13 +3271,22 @@ public class SpLib {
         return Short.valueOf(doubleToShort(e.doubleValue()));
     }
 
+    public static Byte convFloatToByte(Float e) {
+        if (e == null) {
+            return null;
+        }
+
+        return Byte.valueOf(doubleToByte(e.doubleValue()));
+    }
+
     public static String convFloatToString(Float e) {
         if (e == null) {
             return null;
         }
 
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
-            return detachTrailingZeros(String.format("%.6f", e));
+        if (Context.getSystemParameterBool(SysParam.ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
+            BigDecimal bd = new BigDecimal(e.doubleValue(), floatToStringContext);
+            return detachTrailingZeros(bd.toPlainString());
         } else {
             return String.format("%.6e", e);
         }
@@ -3119,7 +3297,11 @@ public class SpLib {
             return null;
         }
 
-        return Double.valueOf(e.doubleValue());
+        try {
+            return checkDouble(Double.valueOf(e.doubleValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type DOUBLE: " + convFloatToString(e));
+        }
     }
 
     public static BigDecimal convFloatToNumeric(Float e) {
@@ -3127,7 +3309,7 @@ public class SpLib {
             return null;
         }
 
-        return BigDecimal.valueOf(e.doubleValue());
+        return BigDecimal.valueOf(e.doubleValue()).round(floatToNumericContext);
     }
 
     public static Long convFloatToBigint(Float e) {
@@ -3164,15 +3346,23 @@ public class SpLib {
         return Short.valueOf(bigDecimalToShort(e));
     }
 
+    public static Byte convNumericToByte(BigDecimal e) {
+        if (e == null) {
+            return null;
+        }
+
+        return Byte.valueOf(bigDecimalToByte(e));
+    }
+
     public static String convNumericToString(BigDecimal e) {
         if (e == null) {
             return null;
         }
 
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_COMPAT_NUMBER_BEHAVIOR)) {
             return detachTrailingZeros(e.toPlainString());
         } else {
-            return e.toPlainString();
+            return e.toString();
         }
     }
 
@@ -3181,7 +3371,11 @@ public class SpLib {
             return null;
         }
 
-        return Double.valueOf(e.doubleValue());
+        try {
+            return checkDouble(Double.valueOf(e.doubleValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type DOUBLE: " + convNumericToString(e));
+        }
     }
 
     public static Float convNumericToFloat(BigDecimal e) {
@@ -3189,7 +3383,11 @@ public class SpLib {
             return null;
         }
 
-        return Float.valueOf(e.floatValue());
+        try {
+            return checkFloat(Float.valueOf(e.floatValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type FLOAT: " + convNumericToString(e));
+        }
     }
 
     public static Long convNumericToBigint(BigDecimal e) {
@@ -3233,6 +3431,14 @@ public class SpLib {
         return Short.valueOf(longToShort(e.longValue()));
     }
 
+    public static Byte convBigintToByte(Long e) {
+        if (e == null) {
+            return null;
+        }
+
+        return Byte.valueOf(longToByte(e.longValue()));
+    }
+
     public static String convBigintToString(Long e) {
         if (e == null) {
             return null;
@@ -3246,7 +3452,11 @@ public class SpLib {
             return null;
         }
 
-        return Double.valueOf(e.doubleValue());
+        try {
+            return checkDouble(Double.valueOf(e.doubleValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type DOUBLE: " + e);
+        }
     }
 
     public static Float convBigintToFloat(Long e) {
@@ -3254,7 +3464,11 @@ public class SpLib {
             return null;
         }
 
-        return Float.valueOf(e.floatValue());
+        try {
+            return checkFloat(Float.valueOf(e.floatValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type FLOAT: " + e);
+        }
     }
 
     public static BigDecimal convBigintToNumeric(Long e) {
@@ -3290,6 +3504,14 @@ public class SpLib {
         return Short.valueOf(longToShort(e.longValue()));
     }
 
+    public static Byte convIntToByte(Integer e) {
+        if (e == null) {
+            return null;
+        }
+
+        return Byte.valueOf(longToByte(e.longValue()));
+    }
+
     public static String convIntToString(Integer e) {
         if (e == null) {
             return null;
@@ -3303,7 +3525,11 @@ public class SpLib {
             return null;
         }
 
-        return Double.valueOf(e.doubleValue());
+        try {
+            return checkDouble(Double.valueOf(e.doubleValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type DOUBLE: " + e);
+        }
     }
 
     public static Float convIntToFloat(Integer e) {
@@ -3311,7 +3537,11 @@ public class SpLib {
             return null;
         }
 
-        return Float.valueOf(e.floatValue());
+        try {
+            return checkFloat(Float.valueOf(e.floatValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type FLOAT: " + e);
+        }
     }
 
     public static BigDecimal convIntToNumeric(Integer e) {
@@ -3355,6 +3585,14 @@ public class SpLib {
         return Integer.valueOf(e.intValue());
     }
 
+    public static Byte convShortToByte(Short e) {
+        if (e == null) {
+            return null;
+        }
+
+        return Byte.valueOf(longToByte(e.longValue()));
+    }
+
     public static String convShortToString(Short e) {
         if (e == null) {
             return null;
@@ -3368,7 +3606,11 @@ public class SpLib {
             return null;
         }
 
-        return Double.valueOf(e.doubleValue());
+        try {
+            return checkDouble(Double.valueOf(e.doubleValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type DOUBLE: " + e);
+        }
     }
 
     public static Float convShortToFloat(Short e) {
@@ -3376,7 +3618,11 @@ public class SpLib {
             return null;
         }
 
-        return Float.valueOf(e.floatValue());
+        try {
+            return checkFloat(Float.valueOf(e.floatValue()));
+        } catch (VALUE_ERROR ee) {
+            throw new VALUE_ERROR("data overflow on data type FLOAT: " + e);
+        }
     }
 
     public static BigDecimal convShortToNumeric(Short e) {
@@ -3404,11 +3650,11 @@ public class SpLib {
         LocalDateTime dt = DateTimeParser.DatetimeLiteral.parse(e);
         if (dt == null) {
             // invalid string
-            throw new VALUE_ERROR("not in a DATETIME format");
+            throw new VALUE_ERROR("invalid DATETIME string: '" + e + "'");
         }
 
         if (dt.equals(DateTimeParser.nullDatetime)) {
-            return ValueUtilities.NULL_DATETIME;
+            return ZERO_DATETIME;
         } else {
             return new Timestamp(
                     dt.getYear() - 1900,
@@ -3429,11 +3675,11 @@ public class SpLib {
         LocalDate d = DateTimeParser.DateLiteral.parse(e);
         if (d == null) {
             // invalid string
-            throw new VALUE_ERROR("not in a DATE format");
+            throw new VALUE_ERROR("invalid DATE string: '" + e + "'");
         }
 
         if (d.equals(DateTimeParser.nullDate)) {
-            return ValueUtilities.NULL_DATE;
+            return ZERO_DATE;
         } else {
             return new Date(d.getYear() - 1900, d.getMonthValue() - 1, d.getDayOfMonth());
         }
@@ -3447,7 +3693,7 @@ public class SpLib {
         LocalTime t = DateTimeParser.TimeLiteral.parse(e);
         if (t == null) {
             // invalid string
-            throw new VALUE_ERROR("not in a TIME format");
+            throw new VALUE_ERROR("invalid TIME string: '" + e + "'");
         }
 
         return new Time(t.getHour(), t.getMinute(), t.getSecond());
@@ -3461,11 +3707,11 @@ public class SpLib {
         ZonedDateTime zdt = DateTimeParser.TimestampLiteral.parse(e);
         if (zdt == null) {
             // invalid string
-            throw new VALUE_ERROR("not in a TIMESTAMP format");
+            throw new VALUE_ERROR("invalid TIMESTAMP string: '" + e + "'");
         }
 
         if (zdt.equals(DateTimeParser.nullDatetimeGMT)) {
-            return ValueUtilities.NULL_TIMESTAMP;
+            return ZERO_TIMESTAMP;
         } else {
             assert zdt.getNano() == 0;
             return new Timestamp(
@@ -3509,6 +3755,21 @@ public class SpLib {
         return Short.valueOf(bigDecimalToShort(bd));
     }
 
+    public static Byte convStringToByte(String e) {
+        if (e == null) {
+            return null;
+        }
+
+        e = e.trim();
+        if (e.length() == 0) {
+            return BYTE_ZERO;
+        }
+
+        BigDecimal bd = strToBigDecimal(e);
+        ;
+        return Byte.valueOf(bigDecimalToByte(bd));
+    }
+
     public static Double convStringToDouble(String e) {
         if (e == null) {
             return null;
@@ -3520,9 +3781,9 @@ public class SpLib {
         }
 
         try {
-            return Double.valueOf(e);
+            return checkDouble(Double.valueOf(e));
         } catch (NumberFormatException ex) {
-            throw new VALUE_ERROR("not in a DOUBLE format");
+            throw new VALUE_ERROR("invalid DOUBLE string: '" + e + "'");
         }
     }
 
@@ -3537,9 +3798,9 @@ public class SpLib {
         }
 
         try {
-            return Float.valueOf(e);
+            return checkFloat(Float.valueOf(e));
         } catch (NumberFormatException ex) {
-            throw new VALUE_ERROR("not in a FLOAT format");
+            throw new VALUE_ERROR("invalid FLOAT string: '" + e + "'");
         }
     }
 
@@ -3836,6 +4097,29 @@ public class SpLib {
     // Private
     // ------------------------------------------------
 
+    private static MathContext floatToStringContext = new MathContext(7, RoundingMode.HALF_UP);
+    private static MathContext doubleToStringContext = new MathContext(16, RoundingMode.HALF_UP);
+    private static MathContext floatToNumericContext = new MathContext(7, RoundingMode.DOWN);
+    private static MathContext doubleToNumericContext = new MathContext(16, RoundingMode.DOWN);
+
+    private static final Timestamp ZERO_TIMESTAMP =
+            new Timestamp(0 - 1900, 0 - 1, 0, 0, 0, 0, 0); // TODO: CBRD-25595
+    private static final Timestamp ZERO_TIMESTAMP_2 = new Timestamp(0); // Epoch
+
+    private static final Date MIN_DATE = new Date(1 - 1900, 1 - 1, 1);
+    private static final Date MAX_DATE = new Date(9999 - 1900, 12 - 1, 31);
+    private static final Timestamp MIN_TIMESTAMP =
+            new Timestamp(DateTimeParser.minTimestamp.toEpochSecond() * 1000);
+    private static final Timestamp MAX_TIMESTAMP =
+            new Timestamp(DateTimeParser.maxTimestamp.toEpochSecond() * 1000);
+    private static final Timestamp MIN_DATETIME =
+            Timestamp.valueOf(DateTimeParser.minDatetimeLocal);
+    private static final Timestamp MAX_DATETIME =
+            Timestamp.valueOf(DateTimeParser.maxDatetimeLocal);
+
+    private static final String EMPTY_STRING = "";
+    private static final int[] UNKNOWN_LINE_COLUMN = new int[] {-1, -1};
+
     private static final int CODE_CASE_NOT_FOUND = 0;
     private static final int CODE_CURSOR_ALREADY_OPEN = 1;
     private static final int CODE_INVALID_CURSOR = 2;
@@ -3846,7 +4130,7 @@ public class SpLib {
     private static final int CODE_TOO_MANY_ROWS = 7;
     private static final int CODE_VALUE_ERROR = 8;
     private static final int CODE_ZERO_DIVIDE = 9;
-    private static final int CODE_APP_ERROR = 99;
+    private static final int CODE_APP_ERROR = 1000;
 
     private static final String MSG_CASE_NOT_FOUND = "case not found";
     private static final String MSG_CURSOR_ALREADY_OPEN = "cursor already open";
@@ -3860,6 +4144,7 @@ public class SpLib {
     private static final String MSG_ZERO_DIVIDE = "division by zero";
     private static final String MSG_APP_ERROR = "user defined exception";
 
+    private static final Byte BYTE_ZERO = Byte.valueOf((byte) 0);
     private static final Short SHORT_ZERO = Short.valueOf((short) 0);
     private static final Integer INT_ZERO = Integer.valueOf(0);
     private static final Long LONG_ZERO = Long.valueOf(0L);
@@ -3875,7 +4160,50 @@ public class SpLib {
             DateTimeFormatter.ofPattern("hh:mm:ss a MM/dd/yyyy").withLocale(Locale.US);
 
     private static final DateFormat AM_PM = new SimpleDateFormat("a", Locale.US);
-    private static final Date ZERO_DATE = new Date(0L);
+
+    private static Short shortOfInt(int i) {
+        if (i <= Short.MAX_VALUE && i >= Short.MIN_VALUE) {
+            return (short) i;
+        } else {
+            return null;
+        }
+    }
+
+    private static Short addShortExact(Short l, Short r) {
+        int v = l.intValue() + r.intValue(); // never overflows
+        Short ret = shortOfInt(v);
+        if (ret == null) {
+            throw new VALUE_ERROR("data overflow in addition of SHORT values");
+        }
+        return ret;
+    }
+
+    private static Short subtractShortExact(Short l, Short r) {
+        int v = l.intValue() - r.intValue(); // never overflows
+        Short ret = shortOfInt(v);
+        if (ret == null) {
+            throw new VALUE_ERROR("data overflow in subtraction of SHORT values");
+        }
+        return ret;
+    }
+
+    private static Short negateShortExact(Short l) {
+        int v = -l.intValue(); // never overflows
+        Short ret = shortOfInt(v);
+        if (ret == null) {
+            throw new VALUE_ERROR("data overflow in negation of a SHORT value");
+        }
+        return ret;
+    }
+
+    private static Short multiplyShortExact(Short l, Short r) {
+        int v = l.intValue() * r.intValue(); // never overflows
+        Short ret = shortOfInt(v);
+        if (ret == null) {
+            throw new VALUE_ERROR("data overflow in multiplication of SHORT values");
+        }
+        return ret;
+    }
 
     private static String rtrim(String s) {
         assert s != null;
@@ -3945,7 +4273,7 @@ public class SpLib {
     private static Boolean commonOpIn(Object o, Object... arr) {
         assert arr != null;
 
-        if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+        if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
             if (EMPTY_STRING.equals(o)) {
                 o = null;
             }
@@ -3956,7 +4284,7 @@ public class SpLib {
         }
         boolean nullFound = false;
         for (Object p : arr) {
-            if (Server.getSystemParameterBool(Server.SYS_PARAM_ORACLE_STYLE_EMPTY_STRING)) {
+            if (Context.getSystemParameterBool(SysParam.ORACLE_STYLE_EMPTY_STRING)) {
                 if (EMPTY_STRING.equals(p)) {
                     p = null;
                 }
@@ -4034,48 +4362,82 @@ public class SpLib {
         return bigDecimalToShort(bd);
     }
 
+    private static byte doubleToByte(double d) {
+        BigDecimal bd = BigDecimal.valueOf(d);
+        return bigDecimalToByte(bd);
+    }
+
+    private static Time longToTime(long l) {
+        if (l < 0L) {
+            // negative values seem to result in a invalid time value
+            // e.g.
+            // select cast(cast(-1 as bigint) as time);
+            // === <Result of SELECT Command in Line 1> ===
+            //
+            // <00001>  cast( cast(-1 as bigint) as time): 12:00:0/ AM
+            //
+            // 1 row selected. (0.004910 sec) Committed. (0.000020 sec)
+            throw new VALUE_ERROR("negative values not allowed");
+        }
+
+        int totalSec = (int) (l % 86400L);
+        int hour = totalSec / 3600;
+        int minuteSec = totalSec % 3600;
+        int min = minuteSec / 60;
+        int sec = minuteSec % 60;
+        return new Time(hour, min, sec);
+    }
+
+    private static Timestamp longToTimestamp(long l) {
+        if (l < 0L) {
+            //   select cast(cast(-100 as bigint) as timestamp);
+            //   ERROR: Cannot coerce value of domain "bigint" to domain "timestamp"
+            throw new VALUE_ERROR("negative values not allowed");
+        } else if (l > 2147483647L) {
+            // 2147483647L : see section 'implicit type conversion' in the user manual
+            throw new VALUE_ERROR("values over 2,147,483,647 not allowed");
+        } else {
+            return new Timestamp(l * 1000L); // * 1000 : converts it to milli-seconds
+        }
+    }
+
     private static long bigDecimalToLong(BigDecimal bd) {
+        // 1.5 -->2, and -1.5 --> -2 NOTE; different from // Math.round
+        BigDecimal bdp = bd.setScale(0, RoundingMode.HALF_UP);
         try {
-            return ValueUtilities.bigDecimalToLong(bd);
-        } catch (TypeMismatchException e) {
-            throw new VALUE_ERROR(e.getMessage());
+            return bdp.longValueExact();
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow on data type BIGINT: " + convNumericToString(bd));
         }
     }
 
     private static int bigDecimalToInt(BigDecimal bd) {
+        // 1.5 -->2, and -1.5 --> -2 NOTE; different from // Math.round
+        BigDecimal bdp = bd.setScale(0, RoundingMode.HALF_UP);
         try {
-            return ValueUtilities.bigDecimalToInt(bd);
-        } catch (TypeMismatchException e) {
-            throw new VALUE_ERROR(e.getMessage());
+            return bdp.intValueExact();
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow on data type INTEGER: " + convNumericToString(bd));
         }
     }
 
     private static short bigDecimalToShort(BigDecimal bd) {
+        // 1.5 -->2, and -1.5 --> -2 NOTE; different from // Math.round
+        BigDecimal bdp = bd.setScale(0, RoundingMode.HALF_UP);
         try {
-            return ValueUtilities.bigDecimalToShort(bd);
-        } catch (TypeMismatchException e) {
-            throw new VALUE_ERROR(e.getMessage());
+            return bdp.shortValueExact();
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow on data type SHORT: " + convNumericToString(bd));
         }
     }
 
-    private static Time longToTime(long l) {
+    private static byte bigDecimalToByte(BigDecimal bd) {
+        // 1.5 -->2, and -1.5 --> -2 NOTE; different from // Math.round
+        BigDecimal bdp = bd.setScale(0, RoundingMode.HALF_UP);
         try {
-            return ValueUtilities.longToTime(l);
-        } catch (TypeMismatchException e) {
-            throw new VALUE_ERROR(e.getMessage());
-        }
-    }
-
-    private static Timestamp longToTimestamp(long l) {
-        try {
-            Timestamp ret = ValueUtilities.longToTimestamp(l);
-            if (ValueUtilities.checkValidTimestamp(ret)) {
-                return ret;
-            } else {
-                throw new VALUE_ERROR("not in the valid range of TIMESTAMP type");
-            }
-        } catch (TypeMismatchException e) {
-            throw new VALUE_ERROR(e.getMessage());
+            return bdp.byteValueExact();
+        } catch (ArithmeticException e) {
+            throw new VALUE_ERROR("data overflow on data type BYTE: " + convNumericToString(bd));
         }
     }
 
@@ -4087,11 +4449,19 @@ public class SpLib {
         return bigDecimalToShort(BigDecimal.valueOf(l));
     }
 
+    private static byte longToByte(long l) {
+        return bigDecimalToByte(BigDecimal.valueOf(l));
+    }
+
     private static BigDecimal strToBigDecimal(String s) {
         try {
-            return new BigDecimal(s);
+            BigDecimal ret = new BigDecimal(s);
+            if (ret.precision() > 38) {
+                throw new VALUE_ERROR("data overflow when converted to NUMERIC: '" + s + "'");
+            }
+            return ret;
         } catch (NumberFormatException e) {
-            throw new VALUE_ERROR("not in a number form");
+            throw new VALUE_ERROR("invalid number string: '" + s + "'");
         }
     }
 
@@ -6167,16 +6537,6 @@ public class SpLib {
         } else {
             assert rConv != null;
             return lConv.compareTo(rConv);
-        }
-    }
-
-    private static String getHostVarsStr(int len) {
-        if (len == 0) {
-            return "()";
-        } else {
-            String[] arr = new String[len];
-            Arrays.fill(arr, "?");
-            return "(" + String.join(", ", arr) + ")";
         }
     }
 

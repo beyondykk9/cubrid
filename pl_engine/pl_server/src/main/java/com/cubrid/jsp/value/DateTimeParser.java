@@ -38,6 +38,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Arrays;
@@ -150,12 +151,12 @@ public class DateTimeParser {
 
         // get timezone offset
         LocalDateTime localPart;
-        ZoneOffset zone;
+        ZoneId zone;
         int delim = s.lastIndexOf(" ");
         if (delim < 0) {
             // no timezone offset
             localPart = parseLocalDateAndTime(s, forDatetime);
-            zone = Server.getSystemParameterTimezone(Server.SYS_PARAM_TIMEZONE);
+            zone = Server.getConfig().getTimeZone();
         } else {
             String dt = s.substring(0, delim);
             String z = s.substring(delim + 1);
@@ -165,7 +166,7 @@ public class DateTimeParser {
             } catch (DateTimeException e) {
                 // z turn out not to be a timezone offset. try timezone omitted string
                 localPart = parseLocalDateAndTime(s, forDatetime);
-                zone = Server.getSystemParameterTimezone(Server.SYS_PARAM_TIMEZONE);
+                zone = Server.getConfig().getTimeZone();
             }
         }
 
@@ -269,9 +270,22 @@ public class DateTimeParser {
         }
     }
 
+    private static int getCurrentYear() {
+        ZoneId timezone = Server.getConfig().getTimeZone();
+        return ZonedDateTime.now(timezone).getYear();
+    }
+
     private static LocalDate parseDateFragment(String s) {
 
         s = s.trim();
+
+        if (s.split("/").length == 2) {
+            // s can be of the form MM/dd (year omitted)
+            s = s + "/" + getCurrentYear();
+        } else if (s.split("-").length == 2) {
+            // s can be of the form MM-dd (year omitted)
+            s = getCurrentYear() + "-" + s;
+        }
 
         int i = 0;
         for (SimpleDateFormat f : dateFormats) {
@@ -342,13 +356,22 @@ public class DateTimeParser {
     // for parsing time fragment
     // ------------------------------------------------------
 
-    private static final List<SimpleDateFormat> timeFormats12 =
+    // hour 0 ~ 11
+    private static final List<SimpleDateFormat> timeFormats11 =
             Arrays.asList(
                     new SimpleDateFormat("KK:mm aa", Locale.US),
                     new SimpleDateFormat("KK:mm:ss aa", Locale.US),
                     new SimpleDateFormat("KK:mm:ss.SSS aa", Locale.US) // must go at last
                     );
-    private static final List<SimpleDateFormat> timeFormats24 =
+    // hour 1 ~ 12
+    private static final List<SimpleDateFormat> timeFormats12 =
+            Arrays.asList(
+                    new SimpleDateFormat("hh:mm aa", Locale.US),
+                    new SimpleDateFormat("hh:mm:ss aa", Locale.US),
+                    new SimpleDateFormat("hh:mm:ss.SSS aa", Locale.US) // must go at last
+                    );
+    // hour 0 ~ 23
+    private static final List<SimpleDateFormat> timeFormats23 =
             Arrays.asList(
                     new SimpleDateFormat("HH:mm"),
                     new SimpleDateFormat("HH:mm:ss"),
@@ -356,11 +379,15 @@ public class DateTimeParser {
                     );
 
     static {
+        for (SimpleDateFormat f : timeFormats11) {
+            f.setLenient(false);
+            assert f.getCalendar() instanceof GregorianCalendar;
+        }
         for (SimpleDateFormat f : timeFormats12) {
             f.setLenient(false);
             assert f.getCalendar() instanceof GregorianCalendar;
         }
-        for (SimpleDateFormat f : timeFormats24) {
+        for (SimpleDateFormat f : timeFormats23) {
             f.setLenient(false);
             assert f.getCalendar() instanceof GregorianCalendar;
         }
@@ -369,7 +396,16 @@ public class DateTimeParser {
     private static LocalTime parseTimeFragment(String s, boolean millis) {
 
         s = s.trim();
-        List<SimpleDateFormat> formats = (s.indexOf(" ") >= 0) ? timeFormats12 : timeFormats24;
+        List<SimpleDateFormat> formats;
+        if (s.indexOf(" ") >= 0) {
+            if (s.startsWith("00")) {
+                formats = timeFormats11;
+            } else {
+                formats = timeFormats12;
+            }
+        } else {
+            formats = timeFormats23;
+        }
 
         int j = 0;
         for (SimpleDateFormat f : formats) {

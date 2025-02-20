@@ -82,10 +82,11 @@ static int css_master_init (int cport, SOCKET * clientfd);
 static void css_reject_client_request (CSS_CONN_ENTRY * conn, unsigned short rid, int reason);
 static void css_reject_server_request (CSS_CONN_ENTRY * conn, int reason);
 static void css_accept_server_request (CSS_CONN_ENTRY * conn, int reason);
-static void css_accept_new_request (CSS_CONN_ENTRY * conn, unsigned short rid, char *buffer);
+static void css_accept_new_request (CSS_CONN_ENTRY * conn, unsigned short rid, char *buffer, int buffer_length,
+				    bool is_client);
 static void css_accept_old_request (CSS_CONN_ENTRY * conn, unsigned short rid, SOCKET_QUEUE_ENTRY * entry,
 				    char *server_name, int server_name_length);
-static void css_register_new_server (CSS_CONN_ENTRY * conn, unsigned short rid);
+static void css_register_new_server (CSS_CONN_ENTRY * conn, unsigned short rid, bool is_client);
 static void css_register_new_server2 (CSS_CONN_ENTRY * conn, unsigned short rid);
 static bool css_send_new_request_to_server (SOCKET server_fd, SOCKET client_fd, unsigned short rid,
 					    CSS_SERVER_REQUEST request);
@@ -321,10 +322,12 @@ css_accept_server_request (CSS_CONN_ENTRY * conn, int reason)
  *   conn(in)
  *   rid(in)
  *   buffer(in)
+ *   buffer_length(in)
+ *   is_client(in)
  *
  */
 static void
-css_accept_new_request (CSS_CONN_ENTRY * conn, unsigned short rid, char *buffer)
+css_accept_new_request (CSS_CONN_ENTRY * conn, unsigned short rid, char *buffer, int buffer_length, bool is_client)
 {
   char *datagram;
   char *server_name;
@@ -334,7 +337,7 @@ css_accept_new_request (CSS_CONN_ENTRY * conn, unsigned short rid, char *buffer)
   int server_name_length;
   CSS_CONN_ENTRY *datagram_conn;
   SOCKET_QUEUE_ENTRY *entry;
-  CSS_SERVER_PROC_REGISTER *proc_register = (CSS_SERVER_PROC_REGISTER *) buffer;
+  CSS_SERVER_PROC_REGISTER *proc_register;
 
   datagram = NULL;
   datagram_length = 0;
@@ -350,23 +353,36 @@ css_accept_new_request (CSS_CONN_ENTRY * conn, unsigned short rid, char *buffer)
 #if defined(DEBUG)
 	  css_Active_server_count++;
 #endif
-	  css_add_request_to_socket_queue (datagram_conn, false, proc_register->server_name, server_fd, READ_WRITE, 0,
+	  if (is_client)
+	    {
+	      server_name = buffer;
+	      server_name_length = buffer_length;
+	    }
+	  else
+	    {
+	      assert (buffer != NULL);
+	      proc_register = (CSS_SERVER_PROC_REGISTER *) buffer;
+
+	      assert (proc_register->server_name != NULL);
+	      server_name = proc_register->server_name;
+	      server_name_length = proc_register->server_name_length;
+	    }
+	  length = (int) strlen (server_name) + 1;
+	  css_add_request_to_socket_queue (datagram_conn, false, server_name, server_fd, READ_WRITE, 0,
 					   &css_Master_socket_anchor);
 
 	  //  Note : server_name is usually packed(appended) information of server_name, version_string, env_var, pid,
 	  //  packed from css_pack_server_name(). Since there are some cases that returns server_name and server_name_length
 	  //  as NULL, we need to check if server_name is packed information or not.
-	  length = (int) strlen (proc_register->server_name) + 1;
-	  server_name_length = proc_register->server_name_length;
 
 	  assert (length <= DB_MAX_IDENTIFIER_LENGTH);
 
 	  if (length < server_name_length)
 	    {
-	      entry = css_return_entry_of_server (proc_register->server_name, css_Master_socket_anchor);
+	      entry = css_return_entry_of_server (server_name, css_Master_socket_anchor);
 	      if (entry != NULL)
 		{
-		  server_name = proc_register->server_name + length;
+		  server_name += length;
 		  entry->version_string = (char *) malloc (strlen (server_name) + 1);
 		  if (entry->version_string != NULL)
 		    {
@@ -395,6 +411,8 @@ css_accept_new_request (CSS_CONN_ENTRY * conn, unsigned short rid, char *buffer)
 #if !defined(WINDOWS)
 	      if (auto_Restart_server)
 		{
+		  assert (!is_client);
+
 		  /* *INDENT-OFF* */
 		  master_Server_monitor->produce_job (server_monitor::job_type::REGISTER_SERVER, proc_register->pid,
 						      proc_register->exec_path, proc_register->args, proc_register->server_name);
@@ -462,11 +480,12 @@ css_accept_old_request (CSS_CONN_ENTRY * conn, unsigned short rid, SOCKET_QUEUE_
  *   return: none
  *   conn(in)
  *   rid(in)
+ *   is_client(in)
  *
  * Note: This will allow us to pass fds for future requests to the server.
  */
 static void
-css_register_new_server (CSS_CONN_ENTRY * conn, unsigned short rid)
+css_register_new_server (CSS_CONN_ENTRY * conn, unsigned short rid, bool is_client)
 {
   int data_length;
   char *data = NULL;
@@ -477,7 +496,6 @@ css_register_new_server (CSS_CONN_ENTRY * conn, unsigned short rid)
   //  2. When a new cub_server requests to register itself to cub_master.
   //  For the first situation, css_register_new_server() receives the server name as data.
   //  For the second situation, css_register_new_server() receives CSS_SERVER_PROC_REGISTER as data.
-  //  css_register_new_server determines which case it is by checking if the entry is NULL or not.
 
   if (css_receive_data (conn, rid, &data, &data_length, -1) == NO_ERRORS)
     {
@@ -506,7 +524,7 @@ css_register_new_server (CSS_CONN_ENTRY * conn, unsigned short rid)
 
 #else /* ! WINDOWS */
 	  /* accept a request from a new server */
-	  css_accept_new_request (conn, rid, data);
+	  css_accept_new_request (conn, rid, data, data_length, is_client);
 #endif /* ! WINDOWS */
 	}
     }
@@ -788,8 +806,11 @@ css_process_new_connection (SOCKET fd)
 	case DATA_REQUEST:	/* request from a remote client */
 	  css_send_to_existing_server (conn, rid, SERVER_START_NEW_CLIENT);
 	  break;
-	case SERVER_REQUEST:	/* request from a new server */
-	  css_register_new_server (conn, rid);
+	case SERVER_REQUEST_FROM_SERVER:	/* request from a new server */
+	  css_register_new_server (conn, rid, false);
+	  break;
+	case SERVER_REQUEST_FROM_CLIENT:	/* request from a new server */
+	  css_register_new_server (conn, rid, true);
 	  break;
 	case SERVER_REQUEST_NEW:	/* request from a new server */
 	  /* here the server wants to manage its own connection port */
