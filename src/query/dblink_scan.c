@@ -603,10 +603,12 @@ dblink_execute_query (struct access_spec_node *spec, VAL_DESCR * vd, DBLINK_HOST
     {
       if (auto_commit)
 	{
+	  spec->s.dblink_node.conn_handle = -1;
 	  cci_set_autocommit (conn_handle, CCI_AUTOCOMMIT_TRUE);
 	}
       else
 	{
+	  spec->s.dblink_node.conn_handle = conn_handle;
 	  cci_set_autocommit (conn_handle, CCI_AUTOCOMMIT_FALSE);
 	}
 
@@ -631,14 +633,16 @@ dblink_execute_query (struct access_spec_node *spec, VAL_DESCR * vd, DBLINK_HOST
 	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
 	  goto error_exit;
 	}
-#if 0
-      ret = cci_disconnect (conn_handle, &err_buf);
-      if (ret < 0)
+
+      if (auto_commit)
 	{
-	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
-	  goto error_exit;
+	  ret = cci_disconnect (conn_handle, &err_buf);
+	  if (ret < 0)
+	    {
+	      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
+	      goto error_exit;
+	    }
 	}
-#endif
     }
 
   return result;

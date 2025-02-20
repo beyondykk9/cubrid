@@ -2074,7 +2074,7 @@ xqmgr_end_query (THREAD_ENTRY * thread_p, QUERY_ID query_id)
       && query_p->xasl_ent->one_clone.xasl->spec_list->type == TARGET_DBLINK)
     {
       struct access_spec_node *spec = query_p->xasl_ent->one_clone.xasl->spec_list;
-      if (spec)
+      if (spec && spec->s.dblink_node.conn_handle >= 0)
 	{
 	  int rc = dblink_end_tran (spec->s.dblink_node.conn_handle, false);
 	  if (rc != NO_ERROR)
@@ -2270,7 +2270,7 @@ qmgr_clear_trans_wakeup (THREAD_ENTRY * thread_p, int tran_index, bool is_tran_d
 	  if (query_p->xasl_ent->one_clone.xasl->spec_list->type == TARGET_DBLINK)
 	    {
 	      struct access_spec_node *spec = query_p->xasl_ent->one_clone.xasl->spec_list;
-	      if (spec)
+	      if (spec && spec->s.dblink_node.conn_handle >= 0)
 		{
 		  int rc = dblink_end_tran (spec->s.dblink_node.conn_handle, is_abort);
 		  if (rc != NO_ERROR)
