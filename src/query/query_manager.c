@@ -2194,7 +2194,7 @@ qmgr_check_dblink_trans (THREAD_ENTRY * thread_p, int tran_index, bool is_abort)
 
   while (query_p)
     {
-      if (query_p->xasl_ent)
+      if (query_p->xasl_ent && query_p->xasl_ent->one_clone.xasl && query_p->xasl_ent->one_clone.xasl->spec_list)
 	{
 	  if (query_p->xasl_ent->one_clone.xasl->spec_list->type == TARGET_DBLINK)
 	    {
