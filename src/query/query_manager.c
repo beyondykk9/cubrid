@@ -2209,6 +2209,8 @@ qmgr_check_dblink_trans (THREAD_ENTRY * thread_p, int tran_index, bool is_abort)
 		      status = QMGR_TRAN_DBLINK_ABORTED;
 		      er_log_debug (ARG_FILE_LINE, "dblink query %d not completed !\n", query_p->query_id);
 		    }
+
+		  spec->s.dblink_node.conn_handle = -1;	/* no more check the dblink */
 		}
 	    }
 	}
