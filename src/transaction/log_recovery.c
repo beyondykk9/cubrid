@@ -818,6 +818,8 @@ log_recovery (THREAD_ENTRY * thread_p, int ismedia_crash, time_t * stopat)
 
   log_Gl.rcv_phase = LOG_RECOVERY_ANALYSIS_PHASE;
 
+  er_set (ER_NOTIFICATION_SEVERITY, ARG_FILE_LINE, ER_LOG_RECOVERY_ANALYSIS_STARTED, 0);
+
   log_recovery_analysis (thread_p, &rcv_lsa, &start_redolsa, &end_redo_lsa, ismedia_crash, stopat,
 			 &did_incom_recovery, &num_redo_log_records);
 
@@ -2532,7 +2534,9 @@ log_is_page_of_record_broken (THREAD_ENTRY * thread_p, const LOG_LSA * log_lsa,
   /* TODO - Do we need to handle NULL fwd_log_lsa? */
   if (!LSA_ISNULL (&fwd_log_lsa))
     {
-      if (LSA_GE (log_lsa, &fwd_log_lsa) || LSA_GE (&fwd_log_lsa, &log_Gl.hdr.eof_lsa))
+      /* log_Gl.hdr.eof_lsa can have a NULL_LSA value if recovery is started without an active log volume. Its value will be recovered during the log_recovery_analysis process. */
+      if (LSA_GE (log_lsa, &fwd_log_lsa)
+	  || (!LSA_ISNULL (&log_Gl.hdr.eof_lsa) && LSA_GT (&fwd_log_lsa, &log_Gl.hdr.eof_lsa)))
 	{
 	  // check fwd_log_lsa value if it is corrupted or not
 	  is_log_page_broken = true;
@@ -3769,7 +3773,14 @@ log_recovery_redo (THREAD_ENTRY * thread_p, const LOG_LSA * start_redolsa, const
 	    case LOG_ABORT:
 	      {
 		rcv_redo_perf_stat.time_and_increment (cublog::PERF_STAT_ID_READ_LOG);
-		assert (logtb_find_tran_index (thread_p, tran_id) == NULL_TRAN_INDEX);
+
+		/* This is a check to verify whether completed transactions exist in the transaction table.
+		 * In the analysis phase, completed transactions are cleared from the transaction table.
+		 * However, system transactions are not cleared, so they are excluded from the assert condition
+		 */
+		assert (tran_id == LOG_SYSTEM_TRANID ||
+			(tran_id > LOG_SYSTEM_TRANID && logtb_find_tran_index (thread_p, tran_id) == NULL_TRAN_INDEX));
+
 		rcv_redo_perf_stat.time_and_increment (cublog::PERF_STAT_ID_COMMIT_ABORT);
 	      }
 	      break;
@@ -4519,6 +4530,8 @@ log_recovery_undo (THREAD_ENTRY * thread_p)
       tsc_start_time_usec (&info_logging_check_time);
     }
 
+  LOG_CS_EXIT (thread_p);
+
   while (!LSA_ISNULL (&max_undo_lsa))
     {
       /* Fetch the page where the LSA record to undo is located */
@@ -4943,6 +4956,8 @@ log_recovery_undo (THREAD_ENTRY * thread_p)
 
   /* Flush all dirty pages */
 
+  LOG_CS_ENTER (thread_p);
+
   logpb_flush_pages_direct (thread_p);
 
   logpb_flush_header (thread_p);
@@ -5164,7 +5179,7 @@ log_recovery_notpartof_volumes (THREAD_ENTRY * thread_p)
       vdes = fileio_mount (thread_p, log_Db_fullname, vol_fullname, volid, false, false);
       if (vdes != NULL_VOLDES)
 	{
-	  ret = disk_get_creation_time (thread_p, volid, &vol_dbcreation);
+	  ret = disk_get_db_creation (thread_p, volid, &vol_dbcreation);
 	  fileio_dismount (thread_p, vdes);
 	  if (difftime ((time_t) vol_dbcreation, (time_t) log_Gl.hdr.db_creation) != 0)
 	    {
@@ -5283,7 +5298,7 @@ log_recovery_resetlog (THREAD_ENTRY * thread_p, const LOG_LSA * new_append_lsa, 
       if (log_Gl.append.vdes == NULL_VOLDES)
 	{
 	  /* Create the log active since we do not have one */
-	  ret = disk_get_creation_time (thread_p, LOG_DBFIRST_VOLID, &log_Gl.hdr.db_creation);
+	  ret = disk_get_db_creation (thread_p, LOG_DBFIRST_VOLID, &log_Gl.hdr.db_creation);
 	  if (ret != NO_ERROR)
 	    {
 	      logpb_fatal_error (thread_p, true, ARG_FILE_LINE, "log_recovery_resetlog");
