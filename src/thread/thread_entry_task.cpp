@@ -29,12 +29,6 @@
 #include "thread_entry.hpp"
 #include "thread_manager.hpp"
 
-#if defined (SERVER_MODE)
-#if !defined (NDEBUG)
-#include "px_worker_manager.hpp"
-#endif
-#endif
-
 #include <cstring>
 // XXX: SHOULD BE THE LAST INCLUDE HEADER
 #include "memory_wrapper.hpp"
@@ -103,14 +97,10 @@ namespace cubthread
     context.private_lru_index = -1;
 #if defined (SERVER_MODE)
     context.resume_status = THREAD_RESUME_NONE;
-    context.m_px_orig_thread_entry = NULL;
     context.shutdown = false;
     context.m_px_orig_thread_entry = NULL;
     perfmon_destroy_parallel_stats (&context);
     context.m_uses_px_stats = false;
-#if !defined (NDEBUG)
-    parallel_query::assertion_all_workers_released ();
-#endif
 #endif // SERVER_MODE
 
     /* Set clearly for safety.

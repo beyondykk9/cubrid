@@ -1395,17 +1395,21 @@ logtb_dump_tdes_distribute_transaction (FILE * out_fp, int global_tran_id, LOG_2
       for (i = 0; i < coord->num_particps; i++)
 	{
 	  particp_id = ((char *) coord->block_particps_ids + i * coord->particp_id_length);
+	  DBLINK_CONN_INFO *dblink = (DBLINK_CONN_INFO *) particp_id;
+
 	  if (i == 0)
 	    {
-	      fprintf (out_fp, " %s", log_2pc_sprintf_particp (particp_id));
+	      fprintf (out_fp, " [handle = %d, url = %s, user = %s]", dblink->conn_handle, dblink->conn_url,
+		       dblink->user_name);
 	    }
 	  else
 	    {
-	      fprintf (out_fp, ", %s", log_2pc_sprintf_particp (particp_id));
+	      fprintf (out_fp, ", [handle = %d, url = %s, user = %s]", dblink->conn_handle, dblink->conn_url,
+		       dblink->user_name);
 	    }
 	}
       fprintf (out_fp, "\n");
-
+#ifdef LOG_2PC_ACK_RECV_REQUIRED
       if (coord->ack_received)
 	{
 	  fprintf (out_fp, "    Acknowledgement vector =");
@@ -1421,6 +1425,7 @@ logtb_dump_tdes_distribute_transaction (FILE * out_fp, int global_tran_id, LOG_2
 		}
 	    }
 	}
+#endif
       fprintf (out_fp, "\n");
     }
 }
@@ -4002,7 +4007,7 @@ MVCC_SNAPSHOT *
 logtb_get_mvcc_snapshot (THREAD_ENTRY * thread_p)
 {
   LOG_TDES *tdes = LOG_FIND_TDES (LOG_FIND_THREAD_TRAN_INDEX (thread_p));
-
+  THREAD_ENTRY *parent_thread_p = NULL;
   if (!tdes->is_active_worker_transaction ())
     {
       /* System transactions do not have snapshots */
@@ -4011,9 +4016,29 @@ logtb_get_mvcc_snapshot (THREAD_ENTRY * thread_p)
 
   assert (tdes != NULL);
 
+  if (thread_p->m_px_orig_thread_entry != NULL)
+    {
+      parent_thread_p = thread_p->m_px_orig_thread_entry;
+      while (parent_thread_p->m_px_orig_thread_entry != NULL)
+	{
+	  if (parent_thread_p->m_px_orig_thread_entry == parent_thread_p)
+	    {
+	      break;
+	    }
+	  parent_thread_p = parent_thread_p->m_px_orig_thread_entry;
+	  assert (parent_thread_p != thread_p);
+	}
+      pthread_mutex_lock (&parent_thread_p->m_px_lock_mutex);
+    }
+
   if (!tdes->mvccinfo.snapshot.valid)
     {
       log_Gl.mvcc_table.build_mvcc_info (*tdes);
+    }
+
+  if (parent_thread_p != NULL)
+    {
+      pthread_mutex_unlock (&parent_thread_p->m_px_lock_mutex);
     }
 
   return &tdes->mvccinfo.snapshot;
@@ -5640,7 +5665,7 @@ tran_abort_reason_to_string (TRAN_ABORT_REASON val)
  *
  * Note: Do not check system classes that are not part of catalog for rr isolation level error. Isolation consistency
  *	 is secured using locks anyway. These classes are in a way related to table schema's and can be accessed
- *	 before the actual classes. db_user instances are fetched to check authorizations, while db_root and db_trigger
+ *	 before the actual classes. db_user instances are fetched to check authorizations, while db_root and _db_trigger
  *	 are accessed when triggers are modified.
  *	 The RR isolation has to check if an instance that we want to lock was modified by concurrent transaction.
  *	 If the instance was modified, then this means we have an isolation conflict. The check must verify last

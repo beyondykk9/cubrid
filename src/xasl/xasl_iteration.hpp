@@ -19,6 +19,7 @@
 #ifndef _XASL_ITERATION_HPP_
 #define _XASL_ITERATION_HPP_
 
+#include "regu_var.hpp"
 #include "xasl.h"
 #include <functional>
 
@@ -26,6 +27,121 @@ namespace cubxasl
 {
   template<typename T>
   using xasl_iteration_function = std::function<T (XASL_NODE *)>;
+
+  template<typename T>
+  T iterate_xasl_tree (XASL_NODE *xasl, xasl_iteration_function<T> func, T default_value);
+  template<typename T>
+  T iterate_regu_var (REGU_VARIABLE *regu, xasl_iteration_function<T> func, T default_value);
+
+  template<typename T>
+  T iterate_regu_var (REGU_VARIABLE *regu, xasl_iteration_function<T> func, T default_value)
+  {
+    T result;
+    if (regu == nullptr)
+      {
+	return default_value;
+      }
+    if (regu->xasl != nullptr)
+      {
+	result = iterate_xasl_tree (regu->xasl, func, default_value);
+	if (result != default_value)
+	  {
+	    return result;
+	  }
+      }
+    switch (regu->type)
+      {
+      case TYPE_INARITH:
+      case TYPE_OUTARITH:
+      {
+	ARITH_TYPE *arithptr = regu->value.arithptr;
+	result = iterate_regu_var (arithptr->leftptr, func, default_value);
+	if (result != default_value)
+	  {
+	    return result;
+	  }
+	result = iterate_regu_var (arithptr->rightptr, func, default_value);
+	if (result != default_value)
+	  {
+	    return result;
+	  }
+	result = iterate_regu_var (arithptr->thirdptr, func, default_value);
+	if (result != default_value)
+	  {
+	    return result;
+	  }
+      }
+      break;
+      case TYPE_FUNC:
+      {
+	FUNCTION_TYPE *funcp = regu->value.funcp;
+	REGU_VARIABLE_LIST regu_var_list = funcp->operand;
+	for (; regu_var_list != nullptr; regu_var_list = regu_var_list->next)
+	  {
+	    result = iterate_regu_var (&regu_var_list->value, func, default_value);
+	    if (result != default_value)
+	      {
+		return result;
+	      }
+	  }
+      }
+      break;
+      case TYPE_REGUVAL_LIST:
+      {
+	REGU_VALUE_ITEM *regu_value_item = regu->value.reguval_list->regu_list;
+	for (; regu_value_item != nullptr; regu_value_item = regu_value_item->next)
+	  {
+	    result = iterate_regu_var (regu_value_item->value, func, default_value);
+	    if (result != default_value)
+	      {
+		return result;
+	      }
+	  }
+      }
+      break;
+      case TYPE_REGU_VAR_LIST:
+      {
+	REGU_VARIABLE_LIST regu_variable_list = regu->value.regu_var_list;
+	for (; regu_variable_list != nullptr; regu_variable_list = regu_variable_list->next)
+	  {
+	    result = iterate_regu_var (&regu_variable_list->value, func, default_value);
+	    if (result != default_value)
+	      {
+		return result;
+	      }
+	  }
+      }
+      break;
+      case TYPE_SP:
+      {
+	SP_TYPE *sp_ptr = regu->value.sp_ptr;
+	REGU_VARIABLE_LIST regu_variable_list = sp_ptr->args;
+	for (; regu_variable_list != nullptr; regu_variable_list = regu_variable_list->next)
+	  {
+	    result = iterate_regu_var (&regu_variable_list->value, func, default_value);
+	    if (result != default_value)
+	      {
+		return result;
+	      }
+	  }
+      }
+      break;
+      case TYPE_CONSTANT:
+      case TYPE_ATTR_ID:
+      case TYPE_CLASS_ATTR_ID:
+      case TYPE_SHARED_ATTR_ID:
+      case TYPE_POSITION:
+      case TYPE_POS_VALUE:
+      case TYPE_OID:
+      case TYPE_CLASSOID:
+      case TYPE_ORDERBY_NUM:
+      case TYPE_DBVAL:
+      case TYPE_LIST_ID:
+      default:
+	break;
+      }
+    return default_value;
+  }
 
   template<typename T>
   T iterate_xasl_tree (XASL_NODE *xasl, xasl_iteration_function<T> func, T default_value)
@@ -120,6 +236,38 @@ namespace cubxasl
 	if (result != default_value)
 	  {
 	    return result;
+	  }
+      }
+
+    if (xasl->type == INSERT_PROC)
+      {
+	for (int i = 0; i < xasl->proc.insert.num_val_lists; i++)
+	  {
+	    REGU_VARIABLE_LIST regu_var_list = xasl->proc.insert.valptr_lists[i]->valptrp;
+	    for (; regu_var_list != nullptr; regu_var_list = regu_var_list->next)
+	      {
+		result = iterate_regu_var (&regu_var_list->value, func, default_value);
+		if (result != default_value)
+		  {
+		    return result;
+		  }
+	      }
+	  }
+
+	if (xasl->proc.insert.odku != nullptr)
+	  {
+	    REGU_VARIABLE *regu;
+
+	    for (int i = 0; i < xasl->proc.insert.odku->num_assigns; i++)
+	      {
+		regu = xasl->proc.insert.odku->assignments[i].regu_var;
+
+		result = iterate_regu_var (regu, func, default_value);
+		if (result != default_value)
+		  {
+		    return result;
+		  }
+	      }
 	  }
       }
 

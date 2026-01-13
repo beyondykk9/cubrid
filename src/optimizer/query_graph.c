@@ -125,13 +125,7 @@
 #define FLAG_EXCHANGE(e0,e1)       EXCHANGE_BUILDER(int,e0,e1)
 #define INT_PTR_EXCHANGE(e0,e1)    EXCHANGE_BUILDER(int *,e0,e1)
 
-#define BISET_EXCHANGE(s0,s1) \
-    do { \
-	BITSET tmp; \
-	BITSET_MOVE(tmp, s0); \
-	BITSET_MOVE(s0, s1); \
-	BITSET_MOVE(s1, tmp); \
-    } while (0)
+#define BITSET_EXCHANGE(s0,s1)     bitset_exchange(&(s0), &(s1))
 
 #define PUT_FLAG(cond, flag) \
     do { \
@@ -4096,9 +4090,7 @@ add_local_subquery (QO_ENV * env, PT_NODE * node)
   /*
    * Be careful here: the previously allocated QO_SUBQUERY terms
    * contain bitsets that may have self-relative internal pointers, and
-   * those pointers have to be maintained in the new array.  The proper
-   * way to make sure that they are consistent is to use the bitset_assign()
-   * macro, not just to do the bitcopy that memcpy() will do.
+   * those pointers have to be maintained in the new array.
    */
   tmp = NULL;
   if ((n + 1) > 0)
@@ -4107,25 +4099,38 @@ add_local_subquery (QO_ENV * env, PT_NODE * node)
       if (tmp == NULL)
 	{
 	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, 1, sizeof (QO_SUBQUERY) * (n + 1));
+	  env->nsubqueries--;
 	  return;
 	}
     }
   else
     {
+      env->nsubqueries--;
       return;
     }
 
-  memcpy (tmp, env->subqueries, n * sizeof (QO_SUBQUERY));
-  for (i = 0; i < n; i++)
-    {
-      QO_SUBQUERY *subq;
-      subq = &env->subqueries[i];
-      BITSET_MOVE (tmp[i].segs, subq->segs);
-      BITSET_MOVE (tmp[i].nodes, subq->nodes);
-      BITSET_MOVE (tmp[i].terms, subq->terms);
-    }
   if (env->subqueries)
     {
+      memcpy (tmp, env->subqueries, n * sizeof (QO_SUBQUERY));
+      for (i = 0; i < n; i++)
+	{
+	  QO_SUBQUERY *src, *dst;
+	  src = &env->subqueries[i];
+	  dst = &tmp[i];
+
+	  if (src->segs.setp == src->segs.set.word)
+	    {
+	      dst->segs.setp = dst->segs.set.word;
+	    }
+	  if (src->nodes.setp == src->nodes.set.word)
+	    {
+	      dst->nodes.setp = dst->nodes.set.word;
+	    }
+	  if (src->terms.setp == src->terms.set.word)
+	    {
+	      dst->terms.setp = dst->terms.set.word;
+	    }
+	}
       free_and_init (env->subqueries);
     }
   env->subqueries = tmp;
@@ -4139,7 +4144,6 @@ add_local_subquery (QO_ENV * env, PT_NODE * node)
   qo_seg_nodes (env, &tmp->segs, &tmp->nodes);
   tmp->idx = n;
 }
-
 
 /*
  * get_local_subqueries_pre () - Builds vector of locally correlated
@@ -4397,6 +4401,7 @@ add_hint (QO_ENV * env, PT_NODE * tree)
 	      spec = QO_NODE_ENTITY_SPEC (node);
 	      if (spec->info.spec.id == arg->info.name.spec_id)
 		{
+		  p_node = QO_ENV_NODE (env, i);
 		  break;
 		}
 	    }
@@ -4410,60 +4415,53 @@ add_hint (QO_ENV * env, PT_NODE * tree)
 
       if (found && tree->info.query.q.select.leading)
 	{
-	  /* find last leading node */
-	  for (arg = tree->info.query.q.select.leading; arg->next; arg = arg->next)
+	  if (!tree->info.query.q.select.leading->next)
 	    {
-	      ;			/* nop */
-	    }
-	  for (i = 0; i < env->nnodes; i++)
-	    {
-	      node = QO_ENV_NODE (env, i);
-	      spec = QO_NODE_ENTITY_SPEC (node);
-	      if (spec->info.spec.id == arg->info.name.spec_id)
+	      /* If arg is one, it is the root node */
+	      for (i = 0; i < env->nnodes; i++)
 		{
-		  last_ordered_idx = QO_NODE_IDX (node);
-		  break;
+		  node = QO_ENV_NODE (env, i);
+		  if (node != p_node)
+		    {		/* skip out the first ordered node */
+		      bitset_add (&(QO_NODE_OUTER_DEP_SET (node)), QO_NODE_IDX (p_node));
+		    }
 		}
 	    }
-
-	  /* iterate over all nodes */
-	  for (i = 0; i < env->nnodes; i++)
+	  else
 	    {
-	      node = QO_ENV_NODE (env, i);
-	      spec = QO_NODE_ENTITY_SPEC (node);
-	      /* check for arg list */
-	      p_arg = NULL;
-	      for (arg = tree->info.query.q.select.leading, j = 0; arg; arg = arg->next, j++)
+	      /* If there are two or more args, it only depends on the previous arg. */
+	      for (i = 0; i < env->nnodes; i++)
 		{
-		  if (spec->info.spec.id == arg->info.name.spec_id)
+		  node = QO_ENV_NODE (env, i);
+		  spec = QO_NODE_ENTITY_SPEC (node);
+		  /* check for arg list */
+		  p_arg = NULL;
+		  for (arg = tree->info.query.q.select.leading, j = 0; arg; arg = arg->next, j++)
 		    {
-		      if (p_arg)
-			{	/* skip out the first leading spec */
-			  /* find prev node */
-			  for (k = 0; k < env->nnodes; k++)
-			    {
-			      p_node = QO_ENV_NODE (env, k);
-			      p_spec = QO_NODE_ENTITY_SPEC (p_node);
-			      if (p_spec->info.spec.id == p_arg->info.name.spec_id)
+		      if (spec->info.spec.id == arg->info.name.spec_id)
+			{
+			  if (p_arg)
+			    {	/* skip out the first leading spec */
+			      /* find prev node */
+			      for (k = 0; k < env->nnodes; k++)
 				{
-				  bitset_assign (&(QO_NODE_OUTER_DEP_SET (node)), &(QO_NODE_OUTER_DEP_SET (p_node)));
-				  bitset_add (&(QO_NODE_OUTER_DEP_SET (node)), QO_NODE_IDX (p_node));
-				  break;
+				  p_node = QO_ENV_NODE (env, k);
+				  p_spec = QO_NODE_ENTITY_SPEC (p_node);
+				  if (p_spec->info.spec.id == p_arg->info.name.spec_id)
+				    {
+				      bitset_assign (&(QO_NODE_OUTER_DEP_SET (node)),
+						     &(QO_NODE_OUTER_DEP_SET (p_node)));
+				      bitset_add (&(QO_NODE_OUTER_DEP_SET (node)), QO_NODE_IDX (p_node));
+				      break;
+				    }
 				}
 			    }
+			  break;	/* exit loop for arg traverse */
 			}
-		      break;	/* exit loop for arg traverse */
+		      p_arg = arg;	/* save previous arg */
 		    }
-		  p_arg = arg;	/* save previous arg */
-		}
-
-	      /* not found in arg list */
-	      if (!arg)
-		{
-		  bitset_add (&(QO_NODE_OUTER_DEP_SET (node)), last_ordered_idx);
-		}
-
-	    }			/* for (i = ... ) */
+		}		/* for (i = ... ) */
+	    }
 	}
     }
 
@@ -6032,13 +6030,13 @@ qo_exchange (QO_TERM * t0, QO_TERM * t1)
    * 'env' attribute is the same in both, don't bother with it.
    */
   TERMCLASS_EXCHANGE (t0->term_class, t1->term_class);
-  BISET_EXCHANGE (t0->nodes, t1->nodes);
-  BISET_EXCHANGE (t0->segments, t1->segments);
+  BITSET_EXCHANGE (t0->nodes, t1->nodes);
+  BITSET_EXCHANGE (t0->segments, t1->segments);
   DOUBLE_EXCHANGE (t0->selectivity, t1->selectivity);
   INT_EXCHANGE (t0->rank, t1->rank);
   PT_NODE_EXCHANGE (t0->pt_expr, t1->pt_expr);
   INT_EXCHANGE (t0->location, t1->location);
-  BISET_EXCHANGE (t0->subqueries, t1->subqueries);
+  BITSET_EXCHANGE (t0->subqueries, t1->subqueries);
   JOIN_TYPE_EXCHANGE (t0->join_type, t1->join_type);
   INT_EXCHANGE (t0->can_use_index, t1->can_use_index);
   SEGMENTPTR_EXCHANGE (t0->index_seg[0], t1->index_seg[0]);
@@ -7291,8 +7289,8 @@ qo_find_node_indexes (QO_ENV * env, QO_NODE * nodep)
 
       if (qo_is_non_mvcc_class_with_index (class_entryp))
 	{
-	  /* Do not use index of db_serial/db_has_apply_info for scanning. Current index scanning is optimized for
-	   * MVCC, while db_serial and db_ha_apply_info have MVCC disabled.
+	  /* Do not use index of _db_serial/_db_ha_apply_info for scanning. Current index scanning is optimized for
+	   * MVCC, while _db_serial and _db_ha_apply_info have MVCC disabled.
 	   */
 	  constraints = NULL;
 	}
@@ -8460,7 +8458,6 @@ qo_seg_width (QO_SEGMENT * seg)
     {
     case DB_TYPE_VARBIT:
     case DB_TYPE_VARCHAR:
-    case DB_TYPE_VARNCHAR:
       /* do guessing for variable character type */
       size = size * (2 / 3);
       break;
