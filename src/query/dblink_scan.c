@@ -34,6 +34,7 @@
 #include "object_representation.h"
 #include "query_list.h"
 #include "regu_var.hpp"
+#include "fetch.h"
 
 #ifndef DBDEF_HEADER_
 #define DBDEF_HEADER_
@@ -674,6 +675,94 @@ error_exit:
 }
 
 /*
+ * dblink_prepare_scan () - prepare the scan for dblink (connect + prepare only, no execute)
+ *   return: int
+ *   scan_info(out)      : dblink information
+ *   spec(in)            : access spec containing connection info and SQL
+ *
+ * Note: Used when join bind parameters exist. The actual execute happens later
+ *       in dblink_reexecute_scan when the outer table values are available.
+ */
+int
+dblink_prepare_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, struct access_spec_node *spec)
+{
+  static bool auto_commit = prm_get_bool_value (PRM_ID_DBLINK_AUTO_COMMIT);
+
+  int ret;
+  T_CCI_ERROR err_buf;
+  char conn_url[MAX_LEN_CONNECTION_URL] = { 0, };
+  char *user_name = spec->s.dblink_node.conn_user;
+  char *password = spec->s.dblink_node.conn_password;
+  char *sql_text = spec->s.dblink_node.conn_sql;
+
+  char *find = strstr (spec->s.dblink_node.conn_url, ":?");
+  if (find)
+    {
+      snprintf (conn_url, MAX_LEN_CONNECTION_URL, "%s%s", spec->s.dblink_node.conn_url, "&__gateway=true");
+    }
+  else
+    {
+      snprintf (conn_url, MAX_LEN_CONNECTION_URL, "%s%s", spec->s.dblink_node.conn_url, "?__gateway=true");
+    }
+
+  scan_info->conn_handle = -1;
+
+  if (!auto_commit)
+    {
+      scan_info->conn_handle =
+	qmgr_dblink_find_conn_handle (thread_p, spec->s.dblink_node.conn_url, user_name, password, false);
+    }
+
+  if (scan_info->conn_handle < 0)
+    {
+      scan_info->conn_handle = cci_connect_with_url_ex (conn_url, user_name, password, &err_buf);
+      if (scan_info->conn_handle < 0)
+	{
+	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
+	  return ER_DBLINK;
+	}
+
+      ret = cci_set_autocommit (scan_info->conn_handle, (CCI_AUTOCOMMIT_MODE) auto_commit);
+      if (ret < 0)
+	{
+	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, "set autocommit mode");
+	  return ER_DBLINK;
+	}
+
+      if (!auto_commit)
+	{
+	  ret =
+	    qmgr_dblink_add_conn_handle (thread_p, scan_info->conn_handle, spec->s.dblink_node.conn_url, user_name,
+					 password, false);
+	  if (ret < 0)
+	    {
+	      return ER_DBLINK;
+	    }
+	}
+    }
+
+  scan_info->stmt_handle = cci_prepare (scan_info->conn_handle, sql_text, 0, &err_buf);
+  if (scan_info->stmt_handle < 0)
+    {
+      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
+      return ER_DBLINK;
+    }
+
+  /* Get column info from prepared statement (available before execute) */
+  {
+    T_CCI_CUBRID_STMT stmt_type;
+    scan_info->col_info = (void *) cci_get_result_info (scan_info->stmt_handle, &stmt_type, &scan_info->col_cnt);
+  }
+
+  /* Mark that prepare is done but execute is deferred */
+  scan_info->has_join_bind = true;
+  scan_info->is_first_scan = true;
+  scan_info->cursor = CCI_CURSOR_FIRST;
+
+  return NO_ERROR;
+}
+
+/*
  * dblink_open_scan () - open the scan for dblink
  *   return: int
  *   scan_info(out)      : dblink information
@@ -816,6 +905,148 @@ dblink_close_scan (DBLINK_SCAN_INFO * scan_info)
 	  return S_ERROR;
 	}
     }
+
+  return NO_ERROR;
+}
+
+/*
+ * dblink_reexecute_scan () - Re-bind join parameters and re-execute the remote query.
+ *   return: int
+ *   thread_p(in)               : thread entry
+ *   scan_info(in/out)          : dblink scan information (must be already prepared)
+ *   vd(in)                     : value descriptor (for host variable binding)
+ *   host_vars(in)              : host variable index info (original query host vars)
+ *   join_bind_regu_list(in)    : regu variable list for outer table values
+ *   join_bind_count(in)        : number of join bind parameters
+ *
+ * Note: This function is called during nested loop join for each outer row.
+ *       It evaluates the outer table column REGU_VARIABLEs, binds them as
+ *       CCI parameters (appended after original host variables), re-executes
+ *       the remote query, and resets the cursor.
+ */
+int
+dblink_reexecute_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, VAL_DESCR * vd,
+		       DBLINK_HOST_VARS * host_vars, struct regu_variable_list_node *join_bind_regu_list,
+		       int join_bind_count)
+{
+  int ret;
+  T_CCI_ERROR err_buf;
+  T_CCI_A_TYPE a_type;
+  T_CCI_U_TYPE u_type;
+  void *value;
+  DB_VALUE *peek_val;
+  int bind_idx;
+  struct regu_variable_list_node *regu_p;
+
+  assert (scan_info->stmt_handle >= 0);
+
+  /* Step 1: Bind original host variables (if any) */
+  if (host_vars->count > 0)
+    {
+      if ((ret = dblink_bind_param (scan_info->stmt_handle, vd, host_vars)) < 0)
+	{
+	  return ER_DBLINK;
+	}
+    }
+
+  /* Step 2: Bind join parameters from outer table values */
+  bind_idx = host_vars->count;	/* join bind params start after host vars */
+
+  for (regu_p = join_bind_regu_list; regu_p != NULL; regu_p = regu_p->next)
+    {
+      bind_idx++;
+
+      /* Evaluate the REGU_VARIABLE to get the current outer row's value */
+      if (fetch_peek_dbval (thread_p, &regu_p->value, vd, NULL, NULL, NULL, &peek_val) != NO_ERROR)
+	{
+	  return ER_DBLINK;
+	}
+
+      if (DB_IS_NULL (peek_val))
+	{
+	  /* Bind NULL */
+	  ret = cci_bind_param (scan_info->stmt_handle, bind_idx, CCI_A_TYPE_LAST, NULL, CCI_U_TYPE_NULL, 0);
+	}
+      else
+	{
+	  unsigned char type = DB_VALUE_DOMAIN_TYPE (peek_val);
+
+	  switch (type)
+	    {
+	    case DB_TYPE_INTEGER:
+	      a_type = CCI_A_TYPE_INT;
+	      u_type = CCI_U_TYPE_INT;
+	      value = &peek_val->data;
+	      break;
+	    case DB_TYPE_BIGINT:
+	      a_type = CCI_A_TYPE_BIGINT;
+	      u_type = CCI_U_TYPE_BIGINT;
+	      value = &peek_val->data;
+	      break;
+	    case DB_TYPE_SHORT:
+	      a_type = CCI_A_TYPE_INT;
+	      u_type = CCI_U_TYPE_SHORT;
+	      value = &peek_val->data;
+	      break;
+	    case DB_TYPE_DOUBLE:
+	    case DB_TYPE_FLOAT:
+	      a_type = CCI_A_TYPE_DOUBLE;
+	      u_type = CCI_U_TYPE_DOUBLE;
+	      value = &peek_val->data;
+	      break;
+	    case DB_TYPE_STRING:
+	    case DB_TYPE_CHAR:
+	      a_type = CCI_A_TYPE_STR;
+	      u_type = CCI_U_TYPE_STRING;
+	      value = (void *) db_get_string (peek_val);
+	      break;
+	    case DB_TYPE_NUMERIC:
+	      {
+		char num_str[NUMERIC_MAX_STRING_SIZE];
+		a_type = CCI_A_TYPE_STR;
+		u_type = CCI_U_TYPE_NUMERIC;
+		value = (void *) numeric_db_value_print (peek_val, num_str);
+	      }
+	      break;
+	    default:
+	      /* For other types, use string representation as fallback */
+	      a_type = CCI_A_TYPE_STR;
+	      u_type = CCI_U_TYPE_STRING;
+	      value = (void *) db_get_string (peek_val);
+	      break;
+	    }
+
+	  ret = cci_bind_param (scan_info->stmt_handle, bind_idx, a_type, value, u_type, 0);
+	}
+
+      if (ret < 0)
+	{
+	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK_INVALID_BIND_PARAM, 0);
+	  return ER_DBLINK;
+	}
+    }
+
+  /* Step 3: Execute the query */
+  ret = cci_execute (scan_info->stmt_handle, 0, 0, &err_buf);
+  if (ret < 0)
+    {
+      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, err_buf.err_msg);
+      return ER_DBLINK;
+    }
+  else
+    {
+      T_CCI_CUBRID_STMT stmt_type;
+
+      scan_info->col_info = (void *) cci_get_result_info (scan_info->stmt_handle, &stmt_type, &scan_info->col_cnt);
+      if (scan_info->col_info == NULL)
+	{
+	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK, 1, "unknown error");
+	  return ER_DBLINK;
+	}
+      scan_info->cursor = CCI_CURSOR_FIRST;
+    }
+
+  scan_info->is_first_scan = false;
 
   return NO_ERROR;
 }

@@ -3388,6 +3388,11 @@ typedef struct pt_dblink_info
 
   void *remote_col_list;	/* remote table's column list */
 
+  /* join bind push-down: join predicates parameterized for remote execution */
+  PT_NODE *join_pushed_pred;	/* join predicates with outer refs replaced by ? */
+  PT_NODE *join_bind_cols;	/* list of outer table column references for join bind */
+  int join_bind_count;		/* number of join bind parameters */
+
 } PT_DBLINK_INFO;
 
 typedef struct pt_create_server_info

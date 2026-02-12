@@ -58,6 +58,8 @@ struct dblink_scan_info
   int col_cnt;			/* column count of dblink query result */
   char cursor;			/* cursor position T_CCI_CURSOR_POS */
   void *col_info;		/* column information T_CCI_COL_INFO */
+  bool has_join_bind;		/* true if this scan has join bind parameters */
+  bool is_first_scan;		/* true if the scan has not been executed yet */
 };
 
 #define MAX_LEN_CONNECTION_URL 512
@@ -91,6 +93,10 @@ extern int dblink_execute_query (THREAD_ENTRY * thread_p, struct access_spec_nod
 				 DBLINK_HOST_VARS * host_vars);
 extern int dblink_open_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, struct access_spec_node *spec,
 			     VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars);
+extern int dblink_prepare_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, struct access_spec_node *spec);
+extern int dblink_reexecute_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, VAL_DESCR * vd,
+				  DBLINK_HOST_VARS * host_vars,
+				  struct regu_variable_list_node *join_bind_regu_list, int join_bind_count);
 extern int dblink_close_scan (DBLINK_SCAN_INFO * scan_info);
 extern SCAN_CODE dblink_scan_next (DBLINK_SCAN_INFO * scan_info, val_list_node * val_list);
 extern SCAN_CODE dblink_scan_reset (DBLINK_SCAN_INFO * scan_info);

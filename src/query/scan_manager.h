@@ -98,6 +98,12 @@ struct dblink_scan_id
 {
   DBLINK_SCAN_INFO scan_info;	/* information for dblink */
   SCAN_PRED scan_pred;		/* scan predicates(filters) */
+
+  /* join bind push-down: for re-executing remote query with new outer row values */
+  DBLINK_HOST_VARS host_vars;	/* host variables for binding */
+  struct access_spec_node *spec;	/* saved access spec for re-execution */
+  struct regu_variable_list_node *join_bind_regu_list;	/* regu vars for outer table values */
+  int join_bind_count;		/* number of join bind parameters */
 };
 
 typedef struct heap_scan_id HEAP_SCAN_ID;

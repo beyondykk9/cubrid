@@ -245,6 +245,10 @@ static int mq_copypush_sargable_terms_dblink (PARSER_CONTEXT * parser, PT_NODE *
 					      PT_NODE * new_query, FIND_ID_INFO * infop);
 static int mq_copypush_sargable_terms_helper (PARSER_CONTEXT * parser, PT_NODE * statement, PT_NODE * spec,
 					      PT_NODE * subquery, FIND_ID_INFO * infop);
+static bool mq_check_dblink_join_pushable (PARSER_CONTEXT * parser, PT_NODE * term, PT_NODE * spec,
+					   PT_NODE ** outer_col, PT_NODE ** inner_col);
+static PT_NODE *mq_create_join_parameterized_pred (PARSER_CONTEXT * parser, PT_NODE * term, PT_NODE * spec,
+						   PT_NODE ** out_bind_col);
 static PT_NODE *mq_rewrite_vclass_spec_as_derived (PARSER_CONTEXT * parser, PT_NODE * statement, PT_NODE * spec,
 						   PT_NODE * query_spec, bool remove_sel_list);
 static PT_NODE *mq_translate_select (PARSER_CONTEXT * parser, PT_NODE * select_statement);
@@ -4146,13 +4150,16 @@ pt_copypush_terms (PARSER_CONTEXT * parser, PT_NODE * spec, PT_NODE * query, PT_
 	  return;
 	}
 
-      /* copy terms */
-      query->info.dblink_table.pushed_pred = parser_copy_tree_list (parser, term_list);
+      /* copy terms (term_list may be NULL when called only for join predicates) */
+      if (term_list != NULL)
+	{
+	  query->info.dblink_table.pushed_pred = parser_copy_tree_list (parser, term_list);
 
-      /* remove the cast wrap from pushed predicate */
-      query->info.dblink_table.pushed_pred =
-	parser_walk_tree (parser, query->info.dblink_table.pushed_pred, pt_remove_cast_wrap_for_dblink, NULL, NULL,
-			  NULL);
+	  /* remove the cast wrap from pushed predicate */
+	  query->info.dblink_table.pushed_pred =
+	    parser_walk_tree (parser, query->info.dblink_table.pushed_pred, pt_remove_cast_wrap_for_dblink, NULL, NULL,
+			      NULL);
+	}
 
       /* print the pushed predicates */
       save_custom = parser->custom_print;
@@ -4177,12 +4184,37 @@ pt_copypush_terms (PARSER_CONTEXT * parser, PT_NODE * spec, PT_NODE * query, PT_
 	  rewritten = pt_append_bytes (parser, rewritten, ")", 1);
 	}
 #endif
-      if (pushed_pred != NULL)
-	{
-	  /* where predicate */
-	  rewritten = pt_append_bytes (parser, rewritten, " WHERE ", 7);
-	  rewritten = pt_append_varchar (parser, rewritten, pushed_pred);
-	}
+      {
+	bool has_where = false;
+
+	if (pushed_pred != NULL)
+	  {
+	    /* where predicate from regular pushdown */
+	    rewritten = pt_append_bytes (parser, rewritten, " WHERE ", 7);
+	    rewritten = pt_append_varchar (parser, rewritten, pushed_pred);
+	    has_where = true;
+	  }
+
+	/* Also include join pushed predicates (parameterized with ?) */
+	if (query->info.dblink_table.join_pushed_pred != NULL)
+	  {
+	    PARSER_VARCHAR *join_pred;
+	    join_pred = pt_print_and_list (parser, query->info.dblink_table.join_pushed_pred);
+
+	    if (join_pred != NULL)
+	      {
+		if (has_where)
+		  {
+		    rewritten = pt_append_bytes (parser, rewritten, " AND ", 5);
+		  }
+		else
+		  {
+		    rewritten = pt_append_bytes (parser, rewritten, " WHERE ", 7);
+		  }
+		rewritten = pt_append_varchar (parser, rewritten, join_pred);
+	      }
+	  }
+      }
 
       query->info.dblink_table.rewritten = rewritten;
 
@@ -4518,6 +4550,153 @@ mq_copypush_sargable_terms_dblink (PARSER_CONTEXT * parser, PT_NODE * statement,
 #endif
 
 /*
+ * mq_check_dblink_join_pushable () - check if a predicate is a join predicate
+ *   that can be pushed to dblink as a parameterized query.
+ *   The term must be a simple binary comparison (=, <, >, <=, >=, <>) where
+ *   one operand references the dblink spec and the other references another spec.
+ *
+ *   return: true if pushable as join bind
+ *   parser(in):
+ *   term(in):     the predicate to check
+ *   spec(in):     the dblink spec node
+ *   outer_col(out): the operand referencing the outer (non-dblink) table
+ *   inner_col(out): the operand referencing the inner (dblink) table
+ */
+static bool
+mq_check_dblink_join_pushable (PARSER_CONTEXT * parser, PT_NODE * term, PT_NODE * spec,
+			       PT_NODE ** outer_col, PT_NODE ** inner_col)
+{
+  PT_NODE *arg1, *arg2;
+  UINTPTR spec_id;
+
+  *outer_col = NULL;
+  *inner_col = NULL;
+
+  if (term == NULL || term->node_type != PT_EXPR)
+    {
+      return false;
+    }
+
+  /* Only handle simple comparison operators */
+  switch (term->info.expr.op)
+    {
+    case PT_EQ:
+    case PT_NE:
+    case PT_LT:
+    case PT_LE:
+    case PT_GT:
+    case PT_GE:
+      break;
+    default:
+      return false;
+    }
+
+  arg1 = term->info.expr.arg1;
+  arg2 = term->info.expr.arg2;
+
+  if (arg1 == NULL || arg2 == NULL)
+    {
+      return false;
+    }
+
+  spec_id = spec->info.spec.id;
+
+  /* Check case 1: arg1 is from dblink spec, arg2 is from other spec */
+  if (arg1->node_type == PT_NAME && arg1->info.name.spec_id == spec_id
+      && arg2->node_type == PT_NAME && arg2->info.name.spec_id != spec_id)
+    {
+      *inner_col = arg1;
+      *outer_col = arg2;
+      return true;
+    }
+
+  /* Check case 2: arg2 is from dblink spec, arg1 is from other spec */
+  if (arg2->node_type == PT_NAME && arg2->info.name.spec_id == spec_id
+      && arg1->node_type == PT_NAME && arg1->info.name.spec_id != spec_id)
+    {
+      *inner_col = arg2;
+      *outer_col = arg1;
+      return true;
+    }
+
+  return false;
+}
+
+/*
+ * mq_create_join_parameterized_pred () - Create a parameterized copy of a join predicate.
+ *   The outer table column reference is replaced with a PT_HOST_VAR node (?).
+ *   The inner (dblink) column reference remains unchanged (will be printed as alias name).
+ *
+ *   return: modified predicate copy (or NULL on error)
+ *   parser(in):
+ *   term(in):       the original join predicate
+ *   spec(in):       the dblink spec node
+ *   out_bind_col(out): the original outer column reference (for REGU_VARIABLE generation)
+ */
+static PT_NODE *
+mq_create_join_parameterized_pred (PARSER_CONTEXT * parser, PT_NODE * term, PT_NODE * spec, PT_NODE ** out_bind_col)
+{
+  PT_NODE *new_term, *outer_col, *inner_col, *host_var;
+
+  *out_bind_col = NULL;
+
+  if (!mq_check_dblink_join_pushable (parser, term, spec, &outer_col, &inner_col))
+    {
+      return NULL;
+    }
+
+  /* Create a copy of the term */
+  new_term = parser_copy_tree (parser, term);
+  if (new_term == NULL)
+    {
+      return NULL;
+    }
+
+  /* Save the outer column reference for later REGU_VARIABLE generation */
+  *out_bind_col = parser_copy_tree (parser, outer_col);
+
+  /* Create a host variable node to replace the outer column reference */
+  host_var = parser_new_node (parser, PT_HOST_VAR);
+  if (host_var == NULL)
+    {
+      parser_free_tree (parser, new_term);
+      return NULL;
+    }
+
+  /* Set up host variable with a placeholder index (will be resolved during XASL gen) */
+  host_var->info.host_var.var_type = PT_HOST_IN;
+  host_var->type_enum = outer_col->type_enum;
+  host_var->data_type = parser_copy_tree (parser, outer_col->data_type);
+
+  /* Replace the outer column reference in the copied term with the host variable */
+  if (new_term->info.expr.arg1 != NULL
+      && new_term->info.expr.arg1->node_type == PT_NAME
+      && new_term->info.expr.arg1->info.name.spec_id != spec->info.spec.id)
+    {
+      /* arg1 is the outer reference */
+      parser_free_tree (parser, new_term->info.expr.arg1);
+      new_term->info.expr.arg1 = host_var;
+    }
+  else if (new_term->info.expr.arg2 != NULL
+	   && new_term->info.expr.arg2->node_type == PT_NAME
+	   && new_term->info.expr.arg2->info.name.spec_id != spec->info.spec.id)
+    {
+      /* arg2 is the outer reference */
+      parser_free_tree (parser, new_term->info.expr.arg2);
+      new_term->info.expr.arg2 = host_var;
+    }
+  else
+    {
+      /* shouldn't happen */
+      parser_free_tree (parser, new_term);
+      parser_free_tree (parser, host_var);
+      return NULL;
+    }
+
+  return new_term;
+}
+
+/*
  * mq_is_dblink_pushable_term () - check if the predicate is pushable for dblink
  *   return: bool
  *   parser(in):
@@ -4739,6 +4918,55 @@ mq_copypush_sargable_terms_helper (PARSER_CONTEXT * parser, PT_NODE * statement,
 
       /* free alloced */
       parser_free_tree (parser, push_term_list);
+    }
+
+  /*
+   * Second pass: for dblink specs, also check for join predicates that can be
+   * parameterized and pushed to the remote query.
+   * A join predicate like "t.col1 = r.col1" (where r is the dblink table) is
+   * converted to "? = col1" and sent to the remote server, with t.col1's value
+   * bound as a parameter during nested loop join execution.
+   */
+  if (in_spec->info.spec.derived_table_type == PT_DERIVED_DBLINK_TABLE
+      && !is_outer_joined
+      && !parser->flag.is_parsing_static_sql && subquery != NULL && subquery->node_type == PT_DBLINK_TABLE)
+    {
+      PT_NODE *join_push_list = NULL;
+      PT_NODE *bind_col_list = NULL;
+      int join_bind_cnt = 0;
+
+      for (term = statement->info.query.q.select.where; term; term = term->next)
+	{
+	  PT_NODE *outer_col = NULL, *inner_col = NULL;
+	  PT_NODE *bind_col = NULL;
+	  PT_NODE *parameterized_term;
+
+	  /* Skip terms that were already pushed as regular predicates */
+	  if (term->node_type == PT_EXPR && PT_EXPR_INFO_IS_FLAGED (term, PT_EXPR_INFO_COPYPUSH))
+	    {
+	      continue;
+	    }
+
+	  /* Check if this is a join predicate suitable for parameterized push */
+	  parameterized_term = mq_create_join_parameterized_pred (parser, term, spec, &bind_col);
+	  if (parameterized_term != NULL)
+	    {
+	      join_push_list = parser_append_node (parameterized_term, join_push_list);
+	      bind_col_list = parser_append_node (bind_col, bind_col_list);
+	      join_bind_cnt++;
+	    }
+	}
+
+      if (join_bind_cnt > 0)
+	{
+	  /* Store join pushed predicates and bind column references in dblink info */
+	  subquery->info.dblink_table.join_pushed_pred = join_push_list;
+	  subquery->info.dblink_table.join_bind_cols = bind_col_list;
+	  subquery->info.dblink_table.join_bind_count = join_bind_cnt;
+
+	  /* Trigger rewriting of the remote query to include join predicates */
+	  pt_copypush_terms (parser, spec, subquery, NULL, infop->type);
+	}
     }
 
   return push_cnt;

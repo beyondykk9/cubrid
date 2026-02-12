@@ -149,7 +149,8 @@ extern ACCESS_SPEC_TYPE *pt_make_dblink_access_spec (ACCESS_METHOD access,
 						     REGU_VARIABLE_LIST pred_list,
 						     REGU_VARIABLE_LIST attr_list, char *url, char *user,
 						     char *password, int host_var_count, int *host_var_index,
-						     char *sql);
+						     char *sql,
+						     int join_bind_count, REGU_VARIABLE_LIST join_bind_regu_list);
 extern REGU_VARIABLE *pt_to_regu_variable (PARSER_CONTEXT * p, PT_NODE * node, UNBOX unbox);
 extern REGU_VARIABLE_LIST pt_to_position_regu_variable_list (PARSER_CONTEXT * parser, PT_NODE * node_list,
 							     VAL_LIST * value_list, int *attr_offsets);

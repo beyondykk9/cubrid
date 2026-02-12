@@ -5341,7 +5341,8 @@ pt_make_dblink_access_spec (ACCESS_METHOD access,
 			    PRED_EXPR * where_pred,
 			    REGU_VARIABLE_LIST pred_list,
 			    REGU_VARIABLE_LIST attr_list, char *url, char *user, char *password,
-			    int host_var_count, int *host_var_index, char *sql)
+			    int host_var_count, int *host_var_index, char *sql,
+			    int join_bind_count, REGU_VARIABLE_LIST join_bind_regu_list)
 {
   ACCESS_SPEC_TYPE *spec;
 
@@ -5356,6 +5357,8 @@ pt_make_dblink_access_spec (ACCESS_METHOD access,
       spec->s.dblink_node.conn_sql = sql;
       spec->s.dblink_node.host_var_count = host_var_count;
       spec->s.dblink_node.host_var_index = host_var_index;
+      spec->s.dblink_node.join_bind_count = join_bind_count;
+      spec->s.dblink_node.join_bind_regu_list = join_bind_regu_list;
     }
 
   return spec;
@@ -13044,11 +13047,33 @@ pt_to_dblink_table_spec_list (PARSER_CONTEXT * parser, PT_NODE * spec, PT_NODE *
       parser_walk_tree (parser, pdblink->pushed_pred, pt_host_vars_index, &pdblink->host_vars, NULL, NULL);
     }
 
+  /* Also count host vars from join pushed predicates */
+  if (pdblink->join_pushed_pred)
+    {
+      int join_hv_count = 0;
+      parser_walk_tree (parser, pdblink->join_pushed_pred, pt_host_vars_count, &join_hv_count, NULL, NULL);
+      /* Note: join host vars are separately handled by join_bind_regu_list,
+       * so we don't merge them into the regular host_vars index array.
+       * The join host var '?' are bound at positions after regular host vars. */
+    }
+
+  /* Create REGU_VARIABLE_LIST for join bind columns (outer table references) */
+  REGU_VARIABLE_LIST join_bind_regu_list = NULL;
+  int join_bind_count = pdblink->join_bind_count;
+
+  if (join_bind_count > 0 && pdblink->join_bind_cols != NULL)
+    {
+      /* Generate REGU_VARIABLEs for each outer column reference.
+       * These will be evaluated at join execution time to get the current outer row values. */
+      join_bind_regu_list = pt_to_regu_variable_list (parser, pdblink->join_bind_cols, UNBOX_AS_VALUE, NULL, NULL);
+    }
+
   access = pt_make_dblink_access_spec (access_method, where, regu_attributes_pred, regu_attributes_rest,
 				       (char *) pdblink->url->info.value.data_value.str->bytes,
 				       (char *) pdblink->user->info.value.data_value.str->bytes,
 				       (char *) pdblink->pwd->info.value.data_value.str->bytes,
-				       pdblink->host_vars.count, pdblink->host_vars.index, (char *) sql);
+				       pdblink->host_vars.count, pdblink->host_vars.index, (char *) sql,
+				       join_bind_count, join_bind_regu_list);
 
   return access;
 }
@@ -18793,7 +18818,7 @@ pt_to_xasl_for_dblink (PARSER_CONTEXT * parser, PT_NODE * spec)
 				(char *) pdblink->url->info.value.data_value.str->bytes,
 				(char *) pdblink->user->info.value.data_value.str->bytes,
 				(char *) pdblink->pwd->info.value.data_value.str->bytes,
-				pdblink->host_vars.count, pdblink->host_vars.index, (char *) sql);
+				pdblink->host_vars.count, pdblink->host_vars.index, (char *) sql, 0, NULL);
   return xasl;
 }
 

@@ -4089,11 +4089,14 @@ scan_open_method_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
  * scan_open_dblink_scan () -
  *   return: NO_ERROR, or ER_code
  *   scan_id(out): Scan identifier
- *   conn_url(in):
- *   conn_user(in):
- *   conn_password(in):
- *   sql_text(in):
+ *   spec(in): access spec node
+ *   vd(in): value descriptor
+ *   val_list(in): value list
+ *   host_vars(in): host variable info for binding
  *
+ * Note: When join_bind_count > 0, only prepare the statement (no execute).
+ *       The actual execute will happen in scan_reset_scan_block when
+ *       outer row values become available during nested loop join.
  */
 int
 scan_open_dblink_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
@@ -4112,7 +4115,22 @@ scan_open_dblink_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
   scan_init_scan_pred (&dblid->scan_pred, NULL, spec->where_pred,
 		       ((spec->where_pred) ? eval_fnc (thread_p, spec->where_pred, &single_node_type) : NULL));
 
-  return dblink_open_scan (thread_p, &scan_id->s.dblid.scan_info, spec, vd, host_vars);
+  /* Save join bind info for later re-execution */
+  dblid->host_vars = *host_vars;
+  dblid->spec = spec;
+  dblid->join_bind_count = spec->s.dblink_node.join_bind_count;
+  dblid->join_bind_regu_list = spec->s.dblink_node.join_bind_regu_list;
+
+  if (dblid->join_bind_count > 0)
+    {
+      /* Join bind parameters exist: prepare only, defer execution to scan_reset_scan_block */
+      return dblink_prepare_scan (thread_p, &dblid->scan_info, spec);
+    }
+  else
+    {
+      /* No join bind parameters: original behavior - prepare and execute immediately */
+      return dblink_open_scan (thread_p, &dblid->scan_info, spec, vd, host_vars);
+    }
 }
 
 /*
@@ -4567,7 +4585,21 @@ scan_reset_scan_block (THREAD_ENTRY * thread_p, SCAN_ID * s_id)
       break;
 
     case S_DBLINK_SCAN:
-      status = dblink_scan_reset (&s_id->s.dblid.scan_info);
+      if (s_id->s.dblid.join_bind_count > 0)
+	{
+	  /* Join bind parameters exist: re-bind and re-execute for new outer row */
+	  int ret = dblink_reexecute_scan (thread_p, &s_id->s.dblid.scan_info, s_id->vd,
+					   &s_id->s.dblid.host_vars,
+					   s_id->s.dblid.join_bind_regu_list,
+					   s_id->s.dblid.join_bind_count);
+	  s_id->position = S_BEFORE;
+	  status = (ret == NO_ERROR) ? S_SUCCESS : S_ERROR;
+	}
+      else
+	{
+	  /* No join binds: just reset cursor (original behavior) */
+	  status = dblink_scan_reset (&s_id->s.dblid.scan_info);
+	}
       break;
 
     default:
@@ -7089,6 +7121,20 @@ scan_next_dblink_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
   QFILE_TUPLE_RECORD tplrec = { NULL, 0 };
 
   vaidp = &scan_id->s.dblid;
+
+  /* For join bind: if this is the first scan and query hasn't been executed yet,
+   * execute it now with current bind values from the outer row. */
+  if (vaidp->scan_info.has_join_bind && vaidp->scan_info.is_first_scan)
+    {
+      int ret = dblink_reexecute_scan (thread_p, &vaidp->scan_info, scan_id->vd,
+				       &vaidp->host_vars,
+				       vaidp->join_bind_regu_list,
+				       vaidp->join_bind_count);
+      if (ret != NO_ERROR)
+	{
+	  return S_ERROR;
+	}
+    }
 
   /* execute dblink scan */
 

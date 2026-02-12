@@ -844,6 +844,10 @@ struct dblink_spec_node
   char *conn_user;		/* user name for remote DB server */
   char *conn_password;		/* password for remote user */
   char *conn_sql;		/* SQL command text for remote database */
+
+  /* join bind push-down: outer table column values bound as parameters to remote query */
+  int join_bind_count;		/* number of join bind parameters */
+  REGU_VARIABLE_LIST join_bind_regu_list;	/* regu var list for outer table values to bind */
 };
 
 struct reguval_list_spec_node
