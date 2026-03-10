@@ -4109,7 +4109,15 @@ pt_copypush_terms (PARSER_CONTEXT * parser, PT_NODE * spec, PT_NODE * query, PT_
   unsigned int save_custom;
   int max_pred_order;
 
-  if (query == NULL || term_list == NULL)
+  if (query == NULL)
+    {
+      return;
+    }
+
+  /* term_list may be NULL when called specifically for join predicate rewriting
+   * on PT_DBLINK_TABLE nodes that already have join_pushed_pred set.
+   * For other node types, term_list must be non-NULL. */
+  if (term_list == NULL && query->node_type != PT_DBLINK_TABLE)
     {
       return;
     }
@@ -4665,6 +4673,7 @@ mq_create_join_parameterized_pred (PARSER_CONTEXT * parser, PT_NODE * term, PT_N
 
   /* Set up host variable with a placeholder index (will be resolved during XASL gen) */
   host_var->info.host_var.var_type = PT_HOST_IN;
+  host_var->info.host_var.str = "?";
   host_var->type_enum = outer_col->type_enum;
   host_var->data_type = parser_copy_tree (parser, outer_col->data_type);
 
@@ -4826,6 +4835,16 @@ mq_copypush_sargable_terms_helper (PARSER_CONTEXT * parser, PT_NODE * statement,
       return 0;
     }
 
+  /* PT_DBLINK_TABLE nodes are not PT_SELECT queries, so the query-level
+   * checks below (hint, inst_num, analytic, etc.) do not apply.
+   * Regular predicate pushdown for PT_DBLINK_TABLE is handled by
+   * pt_copypush_terms(PT_DBLINK_TABLE), and join predicate pushdown
+   * is handled in mq_rewrite_dblink_as_subquery(). */
+  if (subquery->node_type == PT_DBLINK_TABLE)
+    {
+      goto term_check;
+    }
+
   /* do NOT copy-push for a cached query */
   if (subquery->info.query.q.select.hint & PT_HINT_QUERY_CACHE)
     {
@@ -4846,6 +4865,7 @@ mq_copypush_sargable_terms_helper (PARSER_CONTEXT * parser, PT_NODE * statement,
       return 0;
     }
 
+term_check:
   /* 3.term check */
   /* check outer join spec. */
   is_outer_joined = mq_is_outer_join_spec (parser, spec);
@@ -4855,7 +4875,7 @@ mq_copypush_sargable_terms_helper (PARSER_CONTEXT * parser, PT_NODE * statement,
   for (term = statement->info.query.q.select.where; term; term = term->next)
     {
       /* check for dblink's function term */
-      if (in_spec->info.spec.derived_table_type == PT_DERIVED_DBLINK_TABLE)
+      if (spec->info.spec.derived_table_type == PT_DERIVED_DBLINK_TABLE)
 	{
 	  if (parser->flag.is_parsing_static_sql)
 	    {
@@ -4920,54 +4940,10 @@ mq_copypush_sargable_terms_helper (PARSER_CONTEXT * parser, PT_NODE * statement,
       parser_free_tree (parser, push_term_list);
     }
 
-  /*
-   * Second pass: for dblink specs, also check for join predicates that can be
-   * parameterized and pushed to the remote query.
-   * A join predicate like "t.col1 = r.col1" (where r is the dblink table) is
-   * converted to "? = col1" and sent to the remote server, with t.col1's value
-   * bound as a parameter during nested loop join execution.
-   */
-  if (in_spec->info.spec.derived_table_type == PT_DERIVED_DBLINK_TABLE
-      && !is_outer_joined
-      && !parser->flag.is_parsing_static_sql && subquery != NULL && subquery->node_type == PT_DBLINK_TABLE)
-    {
-      PT_NODE *join_push_list = NULL;
-      PT_NODE *bind_col_list = NULL;
-      int join_bind_cnt = 0;
-
-      for (term = statement->info.query.q.select.where; term; term = term->next)
-	{
-	  PT_NODE *outer_col = NULL, *inner_col = NULL;
-	  PT_NODE *bind_col = NULL;
-	  PT_NODE *parameterized_term;
-
-	  /* Skip terms that were already pushed as regular predicates */
-	  if (term->node_type == PT_EXPR && PT_EXPR_INFO_IS_FLAGED (term, PT_EXPR_INFO_COPYPUSH))
-	    {
-	      continue;
-	    }
-
-	  /* Check if this is a join predicate suitable for parameterized push */
-	  parameterized_term = mq_create_join_parameterized_pred (parser, term, spec, &bind_col);
-	  if (parameterized_term != NULL)
-	    {
-	      join_push_list = parser_append_node (parameterized_term, join_push_list);
-	      bind_col_list = parser_append_node (bind_col, bind_col_list);
-	      join_bind_cnt++;
-	    }
-	}
-
-      if (join_bind_cnt > 0)
-	{
-	  /* Store join pushed predicates and bind column references in dblink info */
-	  subquery->info.dblink_table.join_pushed_pred = join_push_list;
-	  subquery->info.dblink_table.join_bind_cols = bind_col_list;
-	  subquery->info.dblink_table.join_bind_count = join_bind_cnt;
-
-	  /* Trigger rewriting of the remote query to include join predicates */
-	  pt_copypush_terms (parser, spec, subquery, NULL, infop->type);
-	}
-    }
+  /* Note: Join predicate pushdown for dblink specs is handled in
+   * mq_rewrite_dblink_as_subquery() BEFORE the derived_table_type is converted
+   * from PT_DERIVED_DBLINK_TABLE to PT_IS_SUBQUERY. By the time this function runs,
+   * the conversion has already occurred, so join predicate analysis cannot be done here. */
 
   return push_cnt;
 }
@@ -6836,6 +6812,7 @@ mq_rewrite_dblink_as_subquery (PARSER_CONTEXT * parser, PT_NODE * node, void *ar
 {
   PT_NODE *spec, *derived = NULL;
   PT_NODE *derived_table;
+  PT_NODE *dblink_join_bind_spec = NULL;	/* track DBLINK spec with join bind params */
 
   if (node->node_type != PT_SELECT)
     {
@@ -6847,6 +6824,58 @@ mq_rewrite_dblink_as_subquery (PARSER_CONTEXT * parser, PT_NODE * node, void *ar
       if ((derived_table = spec->info.spec.derived_table)
 	  && spec->info.spec.derived_table_type == PT_DERIVED_DBLINK_TABLE)
 	{
+	  /* Before converting to subquery, check for join predicates that can be
+	   * pushed to the remote query as parameterized conditions.
+	   * At this point, spec->info.spec.derived_table_type is still PT_DERIVED_DBLINK_TABLE
+	   * and derived_table->node_type is PT_DBLINK_TABLE, so we can correctly identify
+	   * which columns belong to the dblink spec. */
+	  if (!parser->flag.is_parsing_static_sql
+	      && !mq_is_outer_join_spec (parser, spec) && derived_table->node_type == PT_DBLINK_TABLE)
+	    {
+	      PT_NODE *term;
+	      PT_NODE *join_push_list = NULL;
+	      PT_NODE *bind_col_list = NULL;
+	      int join_bind_cnt = 0;
+
+	      for (term = node->info.query.q.select.where; term; term = term->next)
+		{
+		  PT_NODE *bind_col = NULL;
+		  PT_NODE *parameterized_term;
+
+		  parameterized_term = mq_create_join_parameterized_pred (parser, term, spec, &bind_col);
+		  if (parameterized_term != NULL)
+		    {
+		      join_push_list = parser_append_node (parameterized_term, join_push_list);
+		      bind_col_list = parser_append_node (bind_col, bind_col_list);
+		      join_bind_cnt++;
+		    }
+		}
+
+	      if (join_bind_cnt > 0)
+		{
+		  /* Store join pushed predicates and bind column references in dblink info */
+		  derived_table->info.dblink_table.join_pushed_pred = join_push_list;
+		  derived_table->info.dblink_table.join_bind_cols = bind_col_list;
+		  derived_table->info.dblink_table.join_bind_count = join_bind_cnt;
+
+		  /* Trigger rewriting of the remote query SQL text to include join predicates.
+		   * pt_copypush_terms with NULL term_list will only process join_pushed_pred. */
+		  pt_copypush_terms (parser, spec, derived_table, NULL, FIND_ID_INLINE_VIEW);
+
+		  /* Remember this spec for post-loop join order adjustment */
+		  dblink_join_bind_spec = spec;
+
+		  /* IMPORTANT: Do NOT wrap this dblink spec in a PT_SELECT subquery.
+		   * When join bind parameters exist, the DBLINK scan must remain as
+		   * S_DBLINK_SCAN directly in the main query's scan list so that
+		   * scan_reset_scan_block() can re-bind and re-execute the remote query
+		   * for each outer row during nested loop join execution.
+		   * If we wrapped it in PT_SELECT, it would become a LIST_SCAN that
+		   * executes only once and materializes results, preventing re-execution. */
+		  continue;
+		}
+	    }
+
 	  derived = mq_rewrite_dblink_as_derived (parser, derived_table);
 	  if (derived == NULL)
 	    {
@@ -6856,6 +6885,38 @@ mq_rewrite_dblink_as_subquery (PARSER_CONTEXT * parser, PT_NODE * node, void *ar
 	  derived->info.query.is_subquery = PT_IS_SUBQUERY;
 	  spec->info.spec.derived_table = derived;
 	  spec->info.spec.derived_table_type = PT_IS_SUBQUERY;
+	}
+    }
+
+  /* Post-loop: ensure DBLINK with join bind params is always the INNER scan
+   * in a nested loop join. The DBLINK must come AFTER the local table(s) it
+   * references in the join predicate, because the outer scan's values must
+   * be available when the DBLINK executes its parameterized remote query.
+   *
+   * We achieve this by:
+   * 1. Setting PT_HINT_ORDERED to force the optimizer to use FROM clause order
+   * 2. Moving the DBLINK spec to the end of the FROM list if it is first */
+  if (dblink_join_bind_spec != NULL)
+    {
+      /* Force join order to follow FROM clause order */
+      node->info.query.q.select.hint |= PT_HINT_ORDERED;
+
+      /* If the DBLINK spec is the first in FROM list, move it to the end
+       * so that local table(s) are processed first (as outer scans) */
+      if (node->info.query.q.select.from == dblink_join_bind_spec && dblink_join_bind_spec->next != NULL)
+	{
+	  PT_NODE *last;
+
+	  /* Remove DBLINK spec from head of FROM list */
+	  node->info.query.q.select.from = dblink_join_bind_spec->next;
+
+	  /* Find the last spec in the FROM list */
+	  for (last = dblink_join_bind_spec->next; last->next != NULL; last = last->next)
+	    ;
+
+	  /* Append DBLINK spec at the end */
+	  last->next = dblink_join_bind_spec;
+	  dblink_join_bind_spec->next = NULL;
 	}
     }
 

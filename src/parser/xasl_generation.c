@@ -13064,8 +13064,16 @@ pt_to_dblink_table_spec_list (PARSER_CONTEXT * parser, PT_NODE * spec, PT_NODE *
   if (join_bind_count > 0 && pdblink->join_bind_cols != NULL)
     {
       /* Generate REGU_VARIABLEs for each outer column reference.
-       * These will be evaluated at join execution time to get the current outer row values. */
+       * These will be evaluated at join execution time to get the current outer row values.
+       * Since the dblink spec is now directly in the main query scope (not wrapped in a
+       * PT_SELECT subquery), these references resolve in the current scope's symbol table. */
       join_bind_regu_list = pt_to_regu_variable_list (parser, pdblink->join_bind_cols, UNBOX_AS_VALUE, NULL, NULL);
+      if (join_bind_regu_list == NULL)
+	{
+	  /* Failed to generate REGU_VARIABLEs for outer columns.
+	   * Fall back to non-parameterized execution. */
+	  join_bind_count = 0;
+	}
     }
 
   access = pt_make_dblink_access_spec (access_method, where, regu_attributes_pred, regu_attributes_rest,

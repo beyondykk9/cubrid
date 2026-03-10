@@ -4587,13 +4587,25 @@ scan_reset_scan_block (THREAD_ENTRY * thread_p, SCAN_ID * s_id)
     case S_DBLINK_SCAN:
       if (s_id->s.dblid.join_bind_count > 0)
 	{
-	  /* Join bind parameters exist: re-bind and re-execute for new outer row */
-	  int ret = dblink_reexecute_scan (thread_p, &s_id->s.dblid.scan_info, s_id->vd,
-					   &s_id->s.dblid.host_vars,
-					   s_id->s.dblid.join_bind_regu_list,
-					   s_id->s.dblid.join_bind_count);
-	  s_id->position = S_BEFORE;
-	  status = (ret == NO_ERROR) ? S_SUCCESS : S_ERROR;
+	  if (s_id->s.dblid.scan_info.is_first_scan)
+	    {
+	      /* First reset call (before any outer row is available).
+	       * Skip re-execute here; it will happen in scan_next_dblink_scan
+	       * when the first actual scan is requested. Just reset position. */
+	      s_id->position = S_BEFORE;
+	      status = S_SUCCESS;
+	    }
+	  else
+	    {
+	      /* Subsequent reset (inner scan for new outer row):
+	       * re-bind and re-execute with current outer row values. */
+	      int ret = dblink_reexecute_scan (thread_p, &s_id->s.dblid.scan_info, s_id->vd,
+					       &s_id->s.dblid.host_vars,
+					       s_id->s.dblid.join_bind_regu_list,
+					       s_id->s.dblid.join_bind_count);
+	      s_id->position = S_BEFORE;
+	      status = (ret == NO_ERROR) ? S_SUCCESS : S_ERROR;
+	    }
 	}
       else
 	{
