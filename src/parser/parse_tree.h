@@ -3393,6 +3393,10 @@ typedef struct pt_dblink_info
   PT_NODE *join_bind_cols;	/* list of outer table column references for join bind */
   int join_bind_count;		/* number of join bind parameters */
 
+  /* unrelated subquery bind: scalar unrelated subqueries in pushed_pred replaced by ? and bound at execution */
+  PT_NODE *subquery_bind_list;	/* list of unrelated scalar subquery nodes (one per ? placeholder) */
+  int subquery_bind_count;	/* number of subquery bind parameters */
+
 } PT_DBLINK_INFO;
 
 typedef struct pt_create_server_info

@@ -4121,6 +4121,44 @@ scan_open_dblink_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
   dblid->join_bind_count = spec->s.dblink_node.join_bind_count;
   dblid->join_bind_regu_list = spec->s.dblink_node.join_bind_regu_list;
 
+  /* Unrelated subquery bind: evaluate once at open */
+  dblid->subquery_bind_count = spec->s.dblink_node.subquery_bind_count;
+  dblid->subquery_bind_regu_list = spec->s.dblink_node.subquery_bind_regu_list;
+  dblid->subquery_bind_values = NULL;
+  if (dblid->subquery_bind_count > 0 && dblid->subquery_bind_regu_list != NULL)
+    {
+      struct regu_variable_list_node *regu_p;
+      int idx = 0;
+
+      dblid->subquery_bind_values =
+	(DB_VALUE *) db_private_alloc (thread_p, dblid->subquery_bind_count * sizeof (DB_VALUE));
+      if (dblid->subquery_bind_values == NULL)
+	{
+	  return ER_FAILED;
+	}
+      for (idx = 0; idx < dblid->subquery_bind_count; idx++)
+	{
+	  pr_clear_value (&dblid->subquery_bind_values[idx]);
+	}
+      idx = 0;
+      for (regu_p = dblid->subquery_bind_regu_list; regu_p != NULL && idx < dblid->subquery_bind_count;
+	   regu_p = regu_p->next, idx++)
+	{
+	  if (fetch_copy_dbval (thread_p, &regu_p->value, vd, NULL, NULL, NULL,
+				&dblid->subquery_bind_values[idx]) != NO_ERROR)
+	    {
+	      int i;
+	      for (i = 0; i < idx; i++)
+		{
+		  pr_clear_value (&dblid->subquery_bind_values[i]);
+		}
+	      db_private_free_and_init (thread_p, dblid->subquery_bind_values);
+	      dblid->subquery_bind_values = NULL;
+	      return ER_DBLINK;
+	    }
+	}
+    }
+
   if (dblid->join_bind_count > 0)
     {
       /* Join bind parameters exist: prepare only, defer execution to scan_reset_scan_block */
@@ -4129,7 +4167,8 @@ scan_open_dblink_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id,
   else
     {
       /* No join bind parameters: original behavior - prepare and execute immediately */
-      return dblink_open_scan (thread_p, &dblid->scan_info, spec, vd, host_vars);
+      return dblink_open_scan (thread_p, &dblid->scan_info, spec, vd, host_vars,
+			      dblid->subquery_bind_values, dblid->subquery_bind_count);
     }
 }
 
@@ -4601,6 +4640,8 @@ scan_reset_scan_block (THREAD_ENTRY * thread_p, SCAN_ID * s_id)
 	       * re-bind and re-execute with current outer row values. */
 	      int ret = dblink_reexecute_scan (thread_p, &s_id->s.dblid.scan_info, s_id->vd,
 					       &s_id->s.dblid.host_vars,
+					       s_id->s.dblid.subquery_bind_values,
+					       s_id->s.dblid.subquery_bind_count,
 					       s_id->s.dblid.join_bind_regu_list,
 					       s_id->s.dblid.join_bind_count);
 	      s_id->position = S_BEFORE;
@@ -5107,6 +5148,15 @@ scan_close_scan (THREAD_ENTRY * thread_p, SCAN_ID * scan_id)
       break;
 
     case S_DBLINK_SCAN:
+      if (scan_id->s.dblid.subquery_bind_values != NULL)
+	{
+	  int i;
+	  for (i = 0; i < scan_id->s.dblid.subquery_bind_count; i++)
+	    {
+	      pr_clear_value (&scan_id->s.dblid.subquery_bind_values[i]);
+	    }
+	  db_private_free_and_init (thread_p, scan_id->s.dblid.subquery_bind_values);
+	}
       dblink_close_scan (&scan_id->s.dblid.scan_info);
       break;
 

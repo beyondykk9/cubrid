@@ -384,7 +384,8 @@ dblink_make_date_time_tz (T_CCI_U_TYPE utype, DB_VALUE * value_p, T_CCI_DATE_TZ 
 }
 
 static int
-dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars)
+dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars,
+		   DB_VALUE * subquery_bind_values, int subquery_bind_count)
 {
   int i, n, ret, num_size = 0;
   T_CCI_A_TYPE a_type;
@@ -401,14 +402,30 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
   T_CCI_DATE cci_date;
   T_CCI_BIT cci_bit;
   char num_str[NUMERIC_MAX_STRING_SIZE];
+  DB_VALUE *bind_val;
 
   unsigned char type;
 
   for (n = 0; n < host_vars->count; n++)
     {
       i = host_vars->index[n];
-      value = &vd->dbval_ptr[i].data;
-      type = vd->dbval_ptr[i].domain.general_info.type;
+      if (i >= 0)
+	{
+	  bind_val = &vd->dbval_ptr[i];
+	}
+      else
+	{
+	  /* Negative index: value from subquery_bind_values (unrelated subquery result) */
+	  int sq_idx = -(i + 1);
+	  if (subquery_bind_values == NULL || sq_idx >= subquery_bind_count)
+	    {
+	      er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_DBLINK_INVALID_BIND_PARAM, 0);
+	      return ER_DBLINK_INVALID_BIND_PARAM;
+	    }
+	  bind_val = &subquery_bind_values[sq_idx];
+	}
+      value = &bind_val->data;
+      type = bind_val->domain.general_info.type;
       switch (type)
 	{
 	case DB_TYPE_BIT:
@@ -416,13 +433,13 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 	  a_type = CCI_A_TYPE_BIT;
 	  u_type = (type == DB_TYPE_BIT) ? CCI_U_TYPE_BIT : CCI_U_TYPE_VARBIT;
 	  value = (void *) &cci_bit;
-	  cci_bit.buf = (char *) db_get_bit (&vd->dbval_ptr[i], &num_size);
+	  cci_bit.buf = (char *) db_get_bit (bind_val, &num_size);
 	  cci_bit.size = QSTR_NUM_BYTES (num_size);
 	  break;
 	case DB_TYPE_JSON:
 	  a_type = CCI_A_TYPE_STR;
 	  u_type = CCI_U_TYPE_JSON;
-	  value = (void *) db_get_json_raw_body (&vd->dbval_ptr[i]);
+	  value = (void *) db_get_json_raw_body (bind_val);
 	  break;
 	case DB_TYPE_SHORT:
 	  a_type = CCI_A_TYPE_INT;
@@ -439,7 +456,7 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 	case DB_TYPE_NUMERIC:
 	  a_type = CCI_A_TYPE_STR;
 	  u_type = CCI_U_TYPE_NUMERIC;
-	  value = (void *) numeric_db_value_print (&vd->dbval_ptr[i], num_str);
+	  value = (void *) numeric_db_value_print (bind_val, num_str);
 	  break;
 	case DB_TYPE_DOUBLE:
 	case DB_TYPE_FLOAT:
@@ -450,7 +467,7 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 	case DB_TYPE_CHAR:
 	  a_type = CCI_A_TYPE_STR;
 	  u_type = CCI_U_TYPE_STRING;
-	  value = (void *) db_get_string (&vd->dbval_ptr[i]);
+	  value = (void *) db_get_string (bind_val);
 	  break;
 	case DB_TYPE_DATE:
 	  a_type = CCI_A_TYPE_DATE;
@@ -464,7 +481,7 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 	case DB_TYPE_TIME:
 	  a_type = CCI_A_TYPE_DATE;
 	  u_type = CCI_U_TYPE_TIME;
-	  db_time_decode (&vd->dbval_ptr[i].data.time, &hh, &mm, &ss);
+	  db_time_decode (&bind_val->data.time, &hh, &mm, &ss);
 	  cci_date.hh = hh;
 	  cci_date.mm = mm;
 	  cci_date.ss = ss;
@@ -474,13 +491,13 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 	case DB_TYPE_DATETIME:
 	  a_type = CCI_A_TYPE_DATE;
 	  u_type = CCI_U_TYPE_DATETIME;
-	  DATETIME_DECODE (cci_date, vd->dbval_ptr[i].data.datetime, month, day, year, hh, mm, ss, ms);
+	  DATETIME_DECODE (cci_date, bind_val->data.datetime, month, day, year, hh, mm, ss, ms);
 	  value = &cci_date;
 	  break;
 	case DB_TYPE_TIMESTAMP:
 	  a_type = CCI_A_TYPE_DATE;
 	  u_type = CCI_U_TYPE_TIMESTAMP;
-	  timestamp = &vd->dbval_ptr[i].data.utime;
+	  timestamp = &bind_val->data.utime;
 	  db_timestamp_decode_ses (timestamp, &date, &time);
 	  TIMESTAMP_DECODE (cci_date, date, time, month, day, year, hh, mm, ss);
 	  value = &cci_date;
@@ -488,8 +505,8 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 	case DB_TYPE_TIMESTAMPTZ:
 	  a_type = CCI_A_TYPE_DATE;
 	  u_type = CCI_U_TYPE_TIMESTAMPTZ;
-	  timestamp = &vd->dbval_ptr[i].data.timestamptz.timestamp;
-	  zone_id = &vd->dbval_ptr[i].data.timestamptz.tz_id;
+	  timestamp = &bind_val->data.timestamptz.timestamp;
+	  zone_id = &bind_val->data.timestamptz.tz_id;
 	  db_timestamp_decode_w_tz_id (timestamp, zone_id, &date, &time);
 	  TIMESTAMP_DECODE (cci_date, date, time, month, day, year, hh, mm, ss);
 	  value = &cci_date;
@@ -505,8 +522,8 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 	case DB_TYPE_DATETIMETZ:
 	  a_type = CCI_A_TYPE_DATE;
 	  u_type = CCI_U_TYPE_DATETIMETZ;
-	  datetime = &vd->dbval_ptr[i].data.datetimetz.datetime;
-	  zone_id = &vd->dbval_ptr[i].data.datetimetz.tz_id;
+	  datetime = &bind_val->data.datetimetz.datetime;
+	  zone_id = &bind_val->data.datetimetz.tz_id;
 	  tz_utc_datetimetz_to_local (datetime, zone_id, &dt_local);
 	  DATETIME_DECODE (cci_date, dt_local, month, day, year, hh, mm, ss, ms);
 	  value = &cci_date;
@@ -514,7 +531,7 @@ dblink_bind_param (int stmt_handle, VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars
 	case DB_TYPE_DATETIMELTZ:
 	  a_type = CCI_A_TYPE_DATE;
 	  u_type = CCI_U_TYPE_DATETIMELTZ;
-	  datetime = &vd->dbval_ptr[i].data.datetimetz.datetime;
+	  datetime = &bind_val->data.datetimetz.datetime;
 	  tz_datetimeltz_to_local (datetime, &dt_local);
 	  DATETIME_DECODE (cci_date, dt_local, month, day, year, hh, mm, ss, ms);
 	  value = &cci_date;
@@ -574,7 +591,8 @@ dblink_end_tran (DBLINK_CONN_ENTRY * dblink, bool is_abort)
 
 int
 dblink_execute_query (THREAD_ENTRY * thread_p, struct access_spec_node *spec, VAL_DESCR * vd,
-		      DBLINK_HOST_VARS * host_vars)
+		      DBLINK_HOST_VARS * host_vars,
+		      DB_VALUE * subquery_bind_values, int subquery_bind_count)
 {
   static bool auto_commit = prm_get_bool_value (PRM_ID_DBLINK_AUTO_COMMIT);
   int ret = NO_ERROR, result, conn_handle, stmt_handle;
@@ -640,7 +658,8 @@ dblink_execute_query (THREAD_ENTRY * thread_p, struct access_spec_node *spec, VA
 
   if (host_vars->count > 0)
     {
-      if ((ret = dblink_bind_param (stmt_handle, vd, host_vars)) < 0)
+      if ((ret = dblink_bind_param (stmt_handle, vd, host_vars,
+				    subquery_bind_values, subquery_bind_count)) < 0)
 	{
 	  goto error_exit;
 	}
@@ -773,7 +792,8 @@ dblink_prepare_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, stru
  */
 int
 dblink_open_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, struct access_spec_node *spec,
-		  VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars)
+		  VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars,
+		  DB_VALUE * subquery_bind_values, int subquery_bind_count)
 {
   static bool auto_commit = prm_get_bool_value (PRM_ID_DBLINK_AUTO_COMMIT);
 
@@ -839,7 +859,8 @@ dblink_open_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, struct 
 
   if (host_vars->count > 0)
     {
-      if ((ret = dblink_bind_param (scan_info->stmt_handle, vd, host_vars)) < 0)
+      if ((ret = dblink_bind_param (scan_info->stmt_handle, vd, host_vars,
+				    subquery_bind_values, subquery_bind_count)) < 0)
 	{
 	  return ER_DBLINK;
 	}
@@ -926,8 +947,9 @@ dblink_close_scan (DBLINK_SCAN_INFO * scan_info)
  */
 int
 dblink_reexecute_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, VAL_DESCR * vd,
-		       DBLINK_HOST_VARS * host_vars, struct regu_variable_list_node *join_bind_regu_list,
-		       int join_bind_count)
+		       DBLINK_HOST_VARS * host_vars,
+		       DB_VALUE * subquery_bind_values, int subquery_bind_count,
+		       struct regu_variable_list_node *join_bind_regu_list, int join_bind_count)
 {
   int ret;
   T_CCI_ERROR err_buf;
@@ -940,10 +962,11 @@ dblink_reexecute_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, VA
 
   assert (scan_info->stmt_handle >= 0);
 
-  /* Step 1: Bind original host variables (if any) */
+  /* Step 1: Bind original host variables and subquery bind values (if any) */
   if (host_vars->count > 0)
     {
-      if ((ret = dblink_bind_param (scan_info->stmt_handle, vd, host_vars)) < 0)
+      if ((ret = dblink_bind_param (scan_info->stmt_handle, vd, host_vars,
+				    subquery_bind_values, subquery_bind_count)) < 0)
 	{
 	  return ER_DBLINK;
 	}

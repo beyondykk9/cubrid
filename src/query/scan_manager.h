@@ -104,6 +104,11 @@ struct dblink_scan_id
   struct access_spec_node *spec;	/* saved access spec for re-execution */
   struct regu_variable_list_node *join_bind_regu_list;	/* regu vars for outer table values */
   int join_bind_count;		/* number of join bind parameters */
+
+  /* unrelated subquery bind: scalar subquery results (evaluated once at open) */
+  int subquery_bind_count;
+  struct regu_variable_list_node *subquery_bind_regu_list;
+  DB_VALUE *subquery_bind_values;	/* allocated array of length subquery_bind_count */
 };
 
 typedef struct heap_scan_id HEAP_SCAN_ID;

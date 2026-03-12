@@ -5342,7 +5342,8 @@ pt_make_dblink_access_spec (ACCESS_METHOD access,
 			    REGU_VARIABLE_LIST pred_list,
 			    REGU_VARIABLE_LIST attr_list, char *url, char *user, char *password,
 			    int host_var_count, int *host_var_index, char *sql,
-			    int join_bind_count, REGU_VARIABLE_LIST join_bind_regu_list)
+			    int join_bind_count, REGU_VARIABLE_LIST join_bind_regu_list,
+			    int subquery_bind_count, REGU_VARIABLE_LIST subquery_bind_regu_list)
 {
   ACCESS_SPEC_TYPE *spec;
 
@@ -5359,6 +5360,8 @@ pt_make_dblink_access_spec (ACCESS_METHOD access,
       spec->s.dblink_node.host_var_index = host_var_index;
       spec->s.dblink_node.join_bind_count = join_bind_count;
       spec->s.dblink_node.join_bind_regu_list = join_bind_regu_list;
+      spec->s.dblink_node.subquery_bind_count = subquery_bind_count;
+      spec->s.dblink_node.subquery_bind_regu_list = subquery_bind_regu_list;
     }
 
   return spec;
@@ -13076,12 +13079,27 @@ pt_to_dblink_table_spec_list (PARSER_CONTEXT * parser, PT_NODE * spec, PT_NODE *
 	}
     }
 
+  /* Create REGU_VARIABLE_LIST for unrelated subquery bind (scalar subqueries evaluated once) */
+  REGU_VARIABLE_LIST subquery_bind_regu_list = NULL;
+  int subquery_bind_count = pdblink->subquery_bind_count;
+
+  if (subquery_bind_count > 0 && pdblink->subquery_bind_list != NULL)
+    {
+      subquery_bind_regu_list =
+	pt_to_regu_variable_list (parser, pdblink->subquery_bind_list, UNBOX_AS_VALUE, NULL, NULL);
+      if (subquery_bind_regu_list == NULL)
+	{
+	  subquery_bind_count = 0;
+	}
+    }
+
   access = pt_make_dblink_access_spec (access_method, where, regu_attributes_pred, regu_attributes_rest,
 				       (char *) pdblink->url->info.value.data_value.str->bytes,
 				       (char *) pdblink->user->info.value.data_value.str->bytes,
 				       (char *) pdblink->pwd->info.value.data_value.str->bytes,
 				       pdblink->host_vars.count, pdblink->host_vars.index, (char *) sql,
-				       join_bind_count, join_bind_regu_list);
+				       join_bind_count, join_bind_regu_list,
+				       subquery_bind_count, subquery_bind_regu_list);
 
   return access;
 }
@@ -18826,7 +18844,7 @@ pt_to_xasl_for_dblink (PARSER_CONTEXT * parser, PT_NODE * spec)
 				(char *) pdblink->url->info.value.data_value.str->bytes,
 				(char *) pdblink->user->info.value.data_value.str->bytes,
 				(char *) pdblink->pwd->info.value.data_value.str->bytes,
-				pdblink->host_vars.count, pdblink->host_vars.index, (char *) sql, 0, NULL);
+				pdblink->host_vars.count, pdblink->host_vars.index, (char *) sql, 0, NULL, 0, NULL);
   return xasl;
 }
 

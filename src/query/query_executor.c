@@ -14891,13 +14891,55 @@ qexec_check_limit_clause (THREAD_ENTRY * thread_p, XASL_NODE * xasl, XASL_STATE 
 static int
 qexec_execute_dblink_query (THREAD_ENTRY * thread_p, XASL_NODE * xasl, XASL_STATE * xasl_state)
 {
-  int res;
+  int res, idx, i;
   DBLINK_HOST_VARS host_vars;
+  struct access_spec_node *spec = xasl->spec_list;
+  DB_VALUE *subquery_bind_values = NULL;
+  int subquery_bind_count = spec->s.dblink_node.subquery_bind_count;
+  regu_variable_list_node *regu_p;
 
-  host_vars.count = xasl->spec_list->s.dblink_node.host_var_count;
-  host_vars.index = xasl->spec_list->s.dblink_node.host_var_index;
+  host_vars.count = spec->s.dblink_node.host_var_count;
+  host_vars.index = spec->s.dblink_node.host_var_index;
 
-  res = dblink_execute_query (thread_p, xasl->spec_list, &xasl_state->vd, &host_vars);
+  if (subquery_bind_count > 0 && spec->s.dblink_node.subquery_bind_regu_list != NULL)
+    {
+      subquery_bind_values =
+	(DB_VALUE *) db_private_alloc (thread_p, subquery_bind_count * sizeof (DB_VALUE));
+      if (subquery_bind_values == NULL)
+	{
+	  return ER_FAILED;
+	}
+      for (idx = 0; idx < subquery_bind_count; idx++)
+	{
+	  pr_clear_value (&subquery_bind_values[idx]);
+	}
+      idx = 0;
+      for (regu_p = spec->s.dblink_node.subquery_bind_regu_list; regu_p != NULL && idx < subquery_bind_count;
+	   regu_p = regu_p->next, idx++)
+	{
+	  if (fetch_copy_dbval (thread_p, &regu_p->value, &xasl_state->vd, NULL, NULL, NULL,
+				&subquery_bind_values[idx]) != NO_ERROR)
+	    {
+	      for (i = 0; i < idx; i++)
+		{
+		  pr_clear_value (&subquery_bind_values[i]);
+		}
+	      db_private_free_and_init (thread_p, subquery_bind_values);
+	      return ER_DBLINK;
+	    }
+	}
+    }
+
+  res = dblink_execute_query (thread_p, spec, &xasl_state->vd, &host_vars,
+			     subquery_bind_values, subquery_bind_count);
+  if (subquery_bind_values != NULL)
+    {
+      for (i = 0; i < subquery_bind_count; i++)
+	{
+	  pr_clear_value (&subquery_bind_values[i]);
+	}
+      db_private_free_and_init (thread_p, subquery_bind_values);
+    }
   if (res < 0)
     {
       return res;

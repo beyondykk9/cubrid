@@ -249,6 +249,9 @@ static bool mq_check_dblink_join_pushable (PARSER_CONTEXT * parser, PT_NODE * te
 					   PT_NODE ** outer_col, PT_NODE ** inner_col);
 static PT_NODE *mq_create_join_parameterized_pred (PARSER_CONTEXT * parser, PT_NODE * term, PT_NODE * spec,
 						   PT_NODE ** out_bind_col);
+static bool mq_is_unrelated_scalar_subquery (PARSER_CONTEXT * parser, PT_NODE * node);
+static PT_NODE *pt_replace_unrelated_subquery_with_hostvar (PARSER_CONTEXT * parser, PT_NODE * node, void *arg,
+							   int *continue_walk);
 static PT_NODE *mq_rewrite_vclass_spec_as_derived (PARSER_CONTEXT * parser, PT_NODE * statement, PT_NODE * spec,
 						   PT_NODE * query_spec, bool remove_sel_list);
 static PT_NODE *mq_translate_select (PARSER_CONTEXT * parser, PT_NODE * select_statement);
@@ -4167,6 +4170,20 @@ pt_copypush_terms (PARSER_CONTEXT * parser, PT_NODE * spec, PT_NODE * query, PT_
 	  query->info.dblink_table.pushed_pred =
 	    parser_walk_tree (parser, query->info.dblink_table.pushed_pred, pt_remove_cast_wrap_for_dblink, NULL, NULL,
 			      NULL);
+
+	  /* Replace unrelated scalar subqueries with ? and collect them for binding */
+	  query->info.dblink_table.subquery_bind_list = NULL;
+	  query->info.dblink_table.subquery_bind_count = 0;
+	  {
+	    PT_REPLACE_SUBQUERY_ARG replace_arg;
+
+	    replace_arg.parser = parser;
+	    replace_arg.query = query;
+	    replace_arg.subquery_index = 0;
+	    query->info.dblink_table.pushed_pred =
+	      parser_walk_tree (parser, query->info.dblink_table.pushed_pred,
+				pt_replace_unrelated_subquery_with_hostvar, &replace_arg, NULL, NULL);
+	  }
 	}
 
       /* print the pushed predicates */
@@ -4706,6 +4723,90 @@ mq_create_join_parameterized_pred (PARSER_CONTEXT * parser, PT_NODE * term, PT_N
 }
 
 /*
+ * mq_is_unrelated_scalar_subquery () - check if node is an unrelated scalar subquery
+ *   (can be evaluated once and bound as a host var in the remote dblink query).
+ *   return: true if node is PT_SELECT/PT_UNION etc., uncorrelated, and single-row.
+ */
+static bool
+mq_is_unrelated_scalar_subquery (PARSER_CONTEXT * parser, PT_NODE * node)
+{
+  if (node == NULL)
+    {
+      return false;
+    }
+  if (node->node_type != PT_SELECT && node->node_type != PT_UNION
+      && node->node_type != PT_DIFFERENCE && node->node_type != PT_INTERSECTION)
+    {
+      return false;
+    }
+  if (!PT_IS_QUERY (node))
+    {
+      return false;
+    }
+  /* Uncorrelated: no reference to outer scope */
+  if (pt_is_correlated_subquery (node))
+    {
+      return false;
+    }
+  /* Scalar: single tuple (aggregate without group_by, same as pt_is_single_tuple) */
+  if (node->info.query.q.select.group_by != NULL)
+    {
+      return false;
+    }
+  if (!pt_has_aggregate (parser, node))
+    {
+      return false;
+    }
+  return true;
+}
+
+/*
+ * pt_replace_unrelated_subquery_with_hostvar () - walker: replace unrelated scalar
+ *   subquery nodes with PT_HOST_VAR '?' and append subquery to bind list.
+ *   host_var index is set to -(subquery_index+1) for binding order.
+ */
+typedef struct
+{
+  PARSER_CONTEXT *parser;
+  PT_NODE *query;		/* PT_DBLINK_TABLE */
+  int subquery_index;
+} PT_REPLACE_SUBQUERY_ARG;
+
+static PT_NODE *
+pt_replace_unrelated_subquery_with_hostvar (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_walk)
+{
+  PT_REPLACE_SUBQUERY_ARG *info = (PT_REPLACE_SUBQUERY_ARG *) arg;
+  PT_NODE *host_var;
+
+  *continue_walk = PT_CONTINUE_WALK;
+
+  if (!mq_is_unrelated_scalar_subquery (parser, node))
+    {
+      return node;
+    }
+
+  /* Replace this subquery node with a host var placeholder (index = -(idx+1)) */
+  host_var = parser_new_node (parser, PT_HOST_VAR);
+  if (host_var == NULL)
+    {
+      return node;
+    }
+  host_var->info.host_var.var_type = PT_HOST_IN;
+  host_var->info.host_var.str = "?";
+  host_var->info.host_var.index = -(info->subquery_index + 1);
+  host_var->type_enum = node->type_enum;
+  host_var->data_type = parser_copy_tree (parser, node->data_type);
+
+  /* Append subquery to bind list (do not free node; it is kept in the list) */
+  info->query->info.dblink_table.subquery_bind_list =
+    parser_append_node (node, info->query->info.dblink_table.subquery_bind_list);
+  info->query->info.dblink_table.subquery_bind_count = ++(info->subquery_index);
+
+  /* Return the replacement so the parent's pointer is updated by the walk */
+  return host_var;
+}
+
+/*
  * mq_is_dblink_pushable_term () - check if the predicate is pushable for dblink
  *   return: bool
  *   parser(in):
@@ -4760,6 +4861,11 @@ mq_is_dblink_pushable_term (PARSER_CONTEXT * parser, PT_NODE * term)
     case PT_HOST_VAR:
     case PT_VALUE:
       return true;
+    case PT_SELECT:
+    case PT_UNION:
+    case PT_DIFFERENCE:
+    case PT_INTERSECTION:
+      return mq_is_unrelated_scalar_subquery (parser, term);
     default:
       return false;
     }

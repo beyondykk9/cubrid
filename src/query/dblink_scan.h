@@ -90,12 +90,15 @@ struct dblink_conn_entry
 
 extern int dblink_end_tran (DBLINK_CONN_ENTRY * dblink, bool is_abort);
 extern int dblink_execute_query (THREAD_ENTRY * thread_p, struct access_spec_node *spec, VAL_DESCR * vd,
-				 DBLINK_HOST_VARS * host_vars);
+				 DBLINK_HOST_VARS * host_vars,
+				 DB_VALUE * subquery_bind_values, int subquery_bind_count);
 extern int dblink_open_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, struct access_spec_node *spec,
-			     VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars);
+			     VAL_DESCR * vd, DBLINK_HOST_VARS * host_vars,
+			     DB_VALUE * subquery_bind_values, int subquery_bind_count);
 extern int dblink_prepare_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, struct access_spec_node *spec);
 extern int dblink_reexecute_scan (THREAD_ENTRY * thread_p, DBLINK_SCAN_INFO * scan_info, VAL_DESCR * vd,
 				  DBLINK_HOST_VARS * host_vars,
+				  DB_VALUE * subquery_bind_values, int subquery_bind_count,
 				  struct regu_variable_list_node *join_bind_regu_list, int join_bind_count);
 extern int dblink_close_scan (DBLINK_SCAN_INFO * scan_info);
 extern SCAN_CODE dblink_scan_next (DBLINK_SCAN_INFO * scan_info, val_list_node * val_list);

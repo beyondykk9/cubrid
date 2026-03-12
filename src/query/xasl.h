@@ -848,6 +848,10 @@ struct dblink_spec_node
   /* join bind push-down: outer table column values bound as parameters to remote query */
   int join_bind_count;		/* number of join bind parameters */
   REGU_VARIABLE_LIST join_bind_regu_list;	/* regu var list for outer table values to bind */
+
+  /* unrelated subquery bind: scalar subqueries in pushed_pred replaced by ? and bound at execution */
+  int subquery_bind_count;	/* number of subquery bind parameters */
+  REGU_VARIABLE_LIST subquery_bind_regu_list;	/* regu var list for subquery results (evaluated once) */
 };
 
 struct reguval_list_spec_node
