@@ -786,6 +786,13 @@ locator_force (LC_COPYAREA * copy_area, int num_ignore_error_list, int *ignore_e
 
   exit_server (*thread_p);
 
+  /* unset start_multi_update flag after first request containing it set */
+  LC_COPYAREA_MANYOBJS *mobjs = LC_MANYOBJS_PTR_IN_COPYAREA (copy_area);
+  if (locator_manyobj_flag_is_set (mobjs, START_MULTI_UPDATE))
+    {
+      locator_manyobj_flag_remove (mobjs, START_MULTI_UPDATE);
+    }
+
   if (error_code != NO_ERROR)
     {
       /* Restore copy_area */
@@ -5917,11 +5924,12 @@ update_histogram_for_all_classes (void)
   PT_HISTOGRAM_INFO histogram_info;
   DB_OBJECT *obj;
   int save;
-  AU_DISABLE (save);
+  AU_SAVE_AND_DISABLE (save);
 
   lmops = locator_get_all_class_mops (DB_FETCH_READ, is_top_level_class);
   if (lmops == NULL)
     {
+      AU_RESTORE (save);
       return ER_FAILED;
     }
 
@@ -5933,7 +5941,7 @@ update_histogram_for_all_classes (void)
       if (obj == NULL)
 	{
 	  assert (er_errid () != NO_ERROR);
-	  AU_ENABLE (save);
+	  AU_RESTORE (save);
 	  return er_errid ();
 	}
 
@@ -5943,11 +5951,11 @@ update_histogram_for_all_classes (void)
       error = update_or_drop_histogram_helper (NULL, obj, &histogram_info, DO_HISTOGRAM_CREATE);
       if (!(error == NO_ERROR || error == ER_OBJ_INVALID_ARGUMENTS))
 	{
-	  AU_ENABLE (save);
+	  AU_RESTORE (save);
 	  return error;
 	}
     }
-  AU_ENABLE (save);
+  AU_RESTORE (save);
 
   return error;
 }

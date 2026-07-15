@@ -101,7 +101,7 @@ struct json_t;
 					NULL); \
 	(parser)->jmp_env_active = 0; \
 	if ((parser)->au_save) \
-	    AU_ENABLE((parser)->au_save); \
+	    AU_RESTORE((parser)->au_save); \
 	return NULL; \
       } \
         else (parser)->jmp_env_active = 1; \
@@ -480,7 +480,8 @@ struct json_t;
            (n)->info.expr.op == PT_DRAND || \
            (n)->info.expr.op == PT_RANDOM || \
            (n)->info.expr.op == PT_RAND || \
-           (n)->info.expr.op == PT_SYS_GUID ))
+           (n)->info.expr.op == PT_SYS_GUID || \
+           (n)->info.expr.op == PT_UUID ))
 
 #define PT_IS_EXPR_WITH_PRIOR_ARG(x) (PT_IS_EXPR_NODE (x) && \
 		PT_IS_EXPR_NODE_WITH_OPERATOR ((x)->info.expr.arg1, PT_PRIOR))
@@ -1159,6 +1160,12 @@ enum pt_type_enum
 
   PT_TYPE_TABLE_COLUMN,		/* not a real type but a type specification of the form <table>.<column>%TYPE */
   /* which can be used only in SP parameter and return types */
+
+  PT_TYPE_SYS_REFCURSOR,	/* SYS_REFCURSOR — used only in PL/CSQL SP return types.
+				   It does not appear in the statements processing logic after parsing because
+				   it is replaced by PT_TYPE_RESULTSET after some checks during parsing.
+				 */
+
 };
 typedef enum pt_type_enum PT_TYPE_ENUM;
 
@@ -1243,7 +1250,7 @@ typedef UINT64 PT_HINT_ENUM;
 #define  PT_HINT_MATERIALIZE_CTE		(1ULL << 43)	/* materialize CTE */
 #define  PT_HINT_NO_PARALLEL_SUBQUERY		(1ULL << 44)	/* disable parallel subquery */
 #define  PT_HINT_NO_PARALLEL_HASH_JOIN		(1ULL << 45)	/* disable parallel hash join */
-#define  PT_HINT_NLJ_KEEP_HEAP_PAGE_PINNED	(1ULL << 46)	/* keep page fixed on nl join first table heap scan */
+#define  PT_HINT_DBLINK_NO_PUSH_DOWN_SUBQ	(1ULL << 47)	/* disable correlated push-down for DBLink remote SQL */
 
 /* Codes for error messages */
 typedef enum
@@ -1514,6 +1521,8 @@ typedef enum
   PT_SLEEP,
 
   PT_SYS_GUID,
+  PT_UUID,
+  PT_UUID_FORMAT,
 
   PT_DBTIMEZONE,
   PT_SESSIONTIMEZONE,
@@ -2118,6 +2127,8 @@ struct pt_parts_info
   PT_NODE *comment;		/* PT_VALUE */
 };
 #define PARTITIONED_SUB_CLASS_TAG "__p__"
+#define PARTITIONED_SUB_CLASS_TAG_LEN (sizeof(PARTITIONED_SUB_CLASS_TAG) - 1)
+
 
 /* Info for DATA_TYPE node */
 struct pt_data_type_info
@@ -3399,6 +3410,8 @@ typedef struct host_vars_info
   int *index;
 } PT_HOST_VAR_IDX_INFO;
 
+#define PT_DBLINK_MAX_CORR_KEYS 8	/* max correlated push-down keys; currently only [0] is used (single equality) */
+
 typedef struct pt_dblink_info
 {
   PT_NODE *conn;		/* name for DBLINK */
@@ -3418,6 +3431,21 @@ typedef struct pt_dblink_info
   PT_NODE *owner_list;
 
   void *remote_col_list;	/* remote table's column list */
+
+  /* Correlated equality push-down (single equality: count == 1).
+   * corr_key_col_names: stable copy for SQL; corr_key_outer_copy: owning copy for XASL (parser_copy_tree). */
+  int corr_key_count;
+  PT_NODE *corr_key_outer_copy[PT_DBLINK_MAX_CORR_KEYS];
+  const char *corr_key_col_names[PT_DBLINK_MAX_CORR_KEYS];
+
+  /* true once mq_dblink_append_corr_pred_sql has written "col = ?" into rewritten.
+   * Replaces the rewritten==NULL sentinel so the pure-corr check in
+   * mq_copypush_sargable_terms_helper does not depend on rewritten's NULL-ness. */
+  bool corr_sql_built;
+
+  /* true when pt_copypush_terms successfully appended " WHERE pushed_pred" to rewritten.
+   * mq_dblink_append_corr_pred_sql uses this to decide AND vs WHERE. */
+  bool rewritten_has_where;
 
 } PT_DBLINK_INFO;
 
@@ -3853,6 +3881,8 @@ struct parser_context
 
   long int lrand;		/* integer random value used by rand() */
   double drand;			/* floating-point random value used by drand() */
+  UINT64 uuidv7_last_ms;	/* last used millisecond timestamp for local UUIDv7 generation */
+  UINT8 uuidv7_seq;		/* local UUIDv7 sequence within the same millisecond */
 
   COMPILE_CONTEXT context;
   struct xasl_node *parent_proc_xasl;
@@ -3995,12 +4025,24 @@ typedef enum cdc_ddl_object_type CDC_DDL_OBJECT_TYPE;
 typedef struct
 {
   int local_cnt;
-  int server_cnt;
-  int server_node_cnt;
+  int server_cnt;		/* raw count of dblink spec nodes walked so far (no dedup); unrelated to
+				 * stored_cnt/distinct_cnt below, used only to detect whether a sub-walk
+				 * encountered any new dblink spec (before/after diff) */
+  /* invariant: 0 <= stored_cnt <= 2; server[i] (0 <= i < stored_cnt) is always non-NULL */
+  int stored_cnt;		/* # entries actually stored in server[]/len[]/server_full_name[];
+				 * the only bound used for indexing/iterating those arrays */
+  int distinct_cnt;		/* # distinct remote servers found so far; multi-remote decision only,
+				 * may exceed 2 (array capacity) on overflow */
   int len[2];
   char *server_full_name[2];
   PT_NODE *server[2];
   bool has_dblink_query;
+  bool is_remote_insert_select;	/* remote-target INSERT SELECT routed to the CCI streaming sink.
+				 * Set for a local source, and kept for a same-server local+remote mixed
+				 * source (local_cnt > 0 && distinct_cnt == 1) whose remote part is
+				 * rewritten to a dblink scan. Cleared when the source is purely remote
+				 * (same-server @A<-@A falls back to full-pushdown) or spans other/multiple
+				 * servers (then multi-remote / local-mixed are rejected). */
 } SERVER_NAME_LIST;
 
 void pt_init_node (PT_NODE * node, PT_NODE_TYPE node_type);
