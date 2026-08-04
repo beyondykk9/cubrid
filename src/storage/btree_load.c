@@ -3311,6 +3311,13 @@ get_next_vpid (THREAD_ENTRY * thread_p, ftab_set & ftab, FILE_PARTIAL_SECTOR * f
 		  return S_ERROR;
 		}
 
+	      if (heap_page_is_bestspace (thread_p, scan_cache->page_watcher.pgptr))
+		{
+		  pgbuf_ordered_unfix (thread_p, &scan_cache->page_watcher);
+		  PGBUF_CLEAR_WATCHER (&scan_cache->page_watcher);
+		  continue;
+		}
+
 	      return S_SUCCESS;
 	    }
 	}
@@ -5330,7 +5337,6 @@ online_index_builder (THREAD_ENTRY * thread_p, BTID_INT * btid_int, HFID * hfids
   // a worker pool is built only of loading is done in parallel
   cubthread::worker_pool_type *ib_workpool =
     is_parallel ? thread_create_worker_pool (ib_thread_count, 1, "online-index", load_context) : NULL;
-  // m_log = btree_is_worker_pool_logging_true ()
 
   aligned_midxkey_buf = PTR_ALIGN (midxkey_buf, MAX_ALIGNMENT);
   p_func_idx_info = func_idx_info.expr ? &func_idx_info : NULL;
