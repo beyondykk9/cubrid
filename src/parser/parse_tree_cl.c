@@ -57,6 +57,7 @@
 #include "parser_allocator.hpp"
 #include "tde.h"
 #include "jsp_cl.h"
+#include "xasl.h"
 
 #include <malloc.h>
 
@@ -961,6 +962,21 @@ copy_node_in_tree_pre (PARSER_CONTEXT * parser, PT_NODE * old_node, void *arg, i
     }
 
   *new_node = *old_node;
+
+  /* clone XASL_ID; aliasing old_node's would double-free in parser_free_node_resources () */
+  new_node->xasl_id = NULL;
+  if (old_node->xasl_id != NULL)
+    {
+      new_node->xasl_id = (XASL_ID *) malloc (sizeof (XASL_ID));
+      if (new_node->xasl_id == NULL)
+	{
+	  PT_ERRORmf (parser, old_node, MSGCAT_SET_PARSER_RUNTIME, MSGCAT_RUNTIME_OUT_OF_MEMORY, sizeof (XASL_ID));
+	  return NULL;
+	}
+
+      XASL_ID_SET_NULL (new_node->xasl_id);
+      XASL_ID_COPY (new_node->xasl_id, old_node->xasl_id);
+    }
 
   /* if node is copied from another parser context, deepcopy string contents */
   if (old_node->parser_id != parser->id)
@@ -2688,6 +2704,8 @@ pt_print_bytes_spec_list (PARSER_CONTEXT * parser, const PT_NODE * p)
 	    case PT_JOIN_LEFT_OUTER:
 	    case PT_JOIN_RIGHT_OUTER:
 	    case PT_JOIN_FULL_OUTER:
+	    case PT_JOIN_SEMI:	/* join keyword printed by the spec; no comma separator */
+	    case PT_JOIN_ANTI:
 	      break;
 	      /* case PT_JOIN_UNION: -- does not support */
 	    default:
@@ -6858,6 +6876,13 @@ pt_print_alter_index (PARSER_CONTEXT * parser, PT_NODE * p)
     {
       b = pt_append_nulstring (parser, b, "rebuild");
     }
+  else if (p->info.index.code == PT_COMPACT_INDEX)
+    {
+      char buf[32];
+
+      snprintf (buf, sizeof (buf), "compact with fill_factor = %d", p->info.index.fill_factor);
+      b = pt_append_nulstring (parser, b, buf);
+    }
 
   return b;
 }
@@ -8144,6 +8169,11 @@ pt_print_create_stored_procedure (PARSER_CONTEXT * parser, PT_NODE * p)
 	{
 	  q = pt_append_nulstring (parser, q, " DETERMINISTIC");
 	}
+
+      if (p->info.sp.parallel_enable)
+	{
+	  q = pt_append_nulstring (parser, q, " PARALLEL_ENABLE");
+	}
     }
   else
     {
@@ -8159,6 +8189,11 @@ pt_print_create_stored_procedure (PARSER_CONTEXT * parser, PT_NODE * p)
       if (p->info.sp.dtrm_type == PT_DETERMINISTIC)
 	{
 	  q = pt_append_nulstring (parser, q, " deterministic");
+	}
+
+      if (p->info.sp.parallel_enable)
+	{
+	  q = pt_append_nulstring (parser, q, " parallel_enable");
 	}
     }
 
@@ -9925,7 +9960,9 @@ pt_print_spec (PARSER_CONTEXT * parser, PT_NODE * p)
   PARSER_VARCHAR *q = 0, *r1;
   unsigned int save_custom;
 
-  if (p->info.spec.natural)
+  /* a natural join is resolved into on_cond, and an inner join may be rewritten into PT_JOIN_NONE.
+   * In both cases, printing "natural" makes an invalid statement. */
+  if (p->info.spec.natural && p->info.spec.on_cond == NULL && p->info.spec.join_type != PT_JOIN_NONE)
     {
       q = pt_append_nulstring (parser, q, " natural ");
     }
@@ -9948,6 +9985,12 @@ pt_print_spec (PARSER_CONTEXT * parser, PT_NODE * p)
       break;
     case PT_JOIN_FULL_OUTER:	/* not used */
       q = pt_append_nulstring (parser, q, " full outer join ");
+      break;
+    case PT_JOIN_SEMI:
+      q = pt_append_nulstring (parser, q, " semi join ");
+      break;
+    case PT_JOIN_ANTI:
+      q = pt_append_nulstring (parser, q, " anti join ");
       break;
       /* case PT_JOIN_UNION: -- does not support */
     default:
@@ -10092,7 +10135,9 @@ pt_print_spec (PARSER_CONTEXT * parser, PT_NODE * p)
 	      q = pt_append_varchar (parser, q, r1);
 	      q = pt_append_nulstring (parser, q, ")");
 
-	      return q;
+	      /* the range variable and the columns are printed above. "natural" is not printed for a resolved
+	       * natural join, so its on_cond must be printed */
+	      goto print_join_cond;
 	    }
 	  else
 	    {
@@ -10158,6 +10203,7 @@ pt_print_spec (PARSER_CONTEXT * parser, PT_NODE * p)
       parser->custom_print = save_custom;
     }
 
+print_join_cond:
   if (p->info.spec.on_cond)
     {
       r1 = pt_print_and_list (parser, p->info.spec.on_cond);
@@ -15217,6 +15263,11 @@ pt_print_select (PARSER_CONTEXT * parser, PT_NODE * p)
 	      q = pt_append_nulstring (parser, q, "NO_MERGE ");
 	    }
 
+	  if (p->info.query.q.select.hint & PT_HINT_NO_UNNEST)
+	    {
+	      q = pt_append_nulstring (parser, q, "NO_UNNEST ");
+	    }
+
 	  if (p->info.query.q.select.hint & PT_HINT_NO_SUBQUERY_CACHE)
 	    {
 	      q = pt_append_nulstring (parser, q, "NO_SUBQUERY_CACHE ");
@@ -18155,6 +18206,27 @@ pt_print_with_clause (PARSER_CONTEXT * parser, PT_NODE * p)
 }
 
 /*
+ * pt_name_list_has_name () - check whether a PT_NAME list already contains
+ *                            an identifier (case-insensitive)
+ *   return: true if found
+ *   name_list(in): list of PT_NAME nodes
+ *   name(in): identifier to look for
+ */
+static bool
+pt_name_list_has_name (PT_NODE * name_list, const char *name)
+{
+  for (; name_list != NULL; name_list = name_list->next)
+    {
+      if (name_list->node_type == PT_NAME && name_list->info.name.original != NULL
+	  && !pt_str_compare (name_list->info.name.original, name, CASE_INSENSITIVE))
+	{
+	  return true;
+	}
+    }
+  return false;
+}
+
+/*
  * pt_print_with_cte ()
  * return :
  * parser (in) :
@@ -18164,6 +18236,46 @@ static PARSER_VARCHAR *
 pt_print_cte (PARSER_CONTEXT * parser, PT_NODE * p)
 {
   PARSER_VARCHAR *q = NULL, *r1;
+  PT_NODE *as_attr_list = p->info.cte.as_attr_list;
+
+  /* rewritten_query (is_parsing_static_sql) is embedded verbatim in the compiled PL/CSQL class and re-parsed
+   * from scratch at runtime; that re-parse derives the CTE's exposed column count directly from how many
+   * items the header below prints. A rewrite/optimization applied to non_recursive_part after as_attr_list
+   * was computed (e.g. adding a hidden order-by carry column while merging a ROWNUM-filtered outer query
+   * with an ORDER BY inner subquery) can grow the actual select list past as_attr_list's cached length, so
+   * pad a local copy of the header here instead of printing a header/body pair that a fresh parse would
+   * reject as mismatched. */
+  if (parser->flag.is_parsing_static_sql)
+    {
+      PT_NODE *select_list = pt_get_select_list (parser, p->info.cte.non_recursive_part);
+      int actual_cnt = pt_length_of_select_list (select_list, INCLUDE_HIDDEN_COLUMNS);
+      int declared_cnt = pt_length_of_list (as_attr_list);
+
+      if (actual_cnt > declared_cnt)
+	{
+	  PT_NODE *extra = NULL;
+	  int version = declared_cnt;
+	  int i;
+
+	  as_attr_list = parser_copy_tree_list (parser, as_attr_list);
+	  for (i = declared_cnt; i < actual_cnt; i++)
+	    {
+	      const char *generated_name;
+
+	      /* keep clear of any user-declared name so the header printed below can't collide with it once
+	       * this text is re-parsed (an "ambiguous reference" at semantic check, not a crash, but wrong) */
+	      do
+		{
+		  generated_name = mq_generate_name (parser, "hidden_col", &version);
+		}
+	      while (pt_name_list_has_name (p->info.cte.as_attr_list, generated_name));
+
+	      extra = parser_append_node (pt_name (parser, generated_name), extra);
+	    }
+
+	  as_attr_list = parser_append_node (extra, as_attr_list);
+	}
+    }
 
   /* name of cte */
   r1 = pt_print_bytes_l (parser, p->info.cte.name);
@@ -18171,7 +18283,7 @@ pt_print_cte (PARSER_CONTEXT * parser, PT_NODE * p)
 
   /* attribute list */
   q = pt_append_nulstring (parser, q, "(");
-  r1 = pt_print_bytes_l (parser, p->info.cte.as_attr_list);
+  r1 = pt_print_bytes_l (parser, as_attr_list);
   q = pt_append_varchar (parser, q, r1);
   q = pt_append_nulstring (parser, q, ")");
 
